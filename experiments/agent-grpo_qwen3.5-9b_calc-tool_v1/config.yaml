@@ -1,0 +1,48 @@
+# 多轮 Agent（工具调用）GRPO 实验配置。
+# 继承官方多轮基底 grpo_sliding_puzzle.yaml（已含 max_rollout_turns/env 范式）+ qwen3.5-9b 模型片段，
+# 只写本实验差异。环境是自定义计算器工具环境（common/environments/example_tool_env.py），
+# 由本目录 run.py 实例化（task_name=calc_tool）。
+defaults:
+  - ../../configs/base/grpo_sliding_puzzle.yaml
+  - ../../configs/models/qwen3.5-9b.yaml
+
+policy:
+  max_total_sequence_length: 4096
+  optimizer:
+    kwargs:
+      lr: 1.0e-6
+
+grpo:
+  num_prompts_per_step: 32
+  num_generations_per_prompt: 8
+  max_rollout_turns: 6              # 多轮：每条轨迹最多 6 轮（工具调用 + 答题）
+  max_num_steps: 200
+  val_period: 20
+  max_val_samples: 64
+
+loss_fn:
+  reference_policy_kl_penalty: 0.01
+
+data:
+  add_system_prompt: false
+  shuffle: false
+
+# 自定义工具环境配置：run.py 以 task_name="calc_tool" 读取 env.calc_tool.cfg
+# 用 _override_ 整段替换基底里的 env（基底是 sliding_puzzle_game）
+env:
+  _override_: true
+  calc_tool:
+    cfg:
+      max_turns: 6
+      answer_tolerance: 1.0e-6
+      max_number: 50           # 生成题目时操作数的范围 [1, max_number]
+      num_operands: 3          # 每题操作数个数
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: false
+  swanlab_enabled: true
+  monitor_gpus: true
+  swanlab:
+    project: "agent-grpo_qwen3.5-9b_calc-tool_v1"
+    name: "turns6-g8-kl0.01"
