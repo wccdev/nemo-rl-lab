@@ -1,0 +1,48 @@
+# 多轮多工具 Agent（检索 + 计算 + 代码执行）GRPO 实验配置。
+# 继承官方多轮基底 grpo_sliding_puzzle.yaml + qwen3.5-9b 片段，只写差异。
+# 环境是自定义多工具环境（common/environments/example_tool_env.py），由本目录 run.py 实例化
+# （task_name=tool_agent，读取 env.tool_agent.cfg）。
+defaults:
+  - ../../configs/base/grpo_sliding_puzzle.yaml
+  - ../../configs/models/qwen3.5-9b.yaml
+
+policy:
+  max_total_sequence_length: 4096
+  optimizer:
+    kwargs:
+      lr: 1.0e-6
+
+grpo:
+  num_prompts_per_step: 32
+  num_generations_per_prompt: 8
+  max_rollout_turns: 6              # 多轮：工具调用 + 答题，最多 6 轮
+  max_num_steps: 200
+  val_period: 20
+  max_val_samples: 64
+
+loss_fn:
+  reference_policy_kl_penalty: 0.01
+
+data:
+  add_system_prompt: false
+  shuffle: false
+
+# 自定义工具环境配置；_override_ 整段替换基底的 env（sliding_puzzle_game）
+env:
+  _override_: true
+  tool_agent:
+    cfg:
+      max_turns: 6
+      answer_tolerance: 1.0e-6
+      max_number: 50           # 生成题目数值范围
+      num_operands: 3          # calc 题操作数个数
+      code_timeout: 5          # python 工具执行超时（秒）
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: false
+  swanlab_enabled: true
+  monitor_gpus: true
+  swanlab:
+    project: "agent-grpo_qwen3.5-9b_multitool_v1"
+    name: "turns6-g8-kl0.01"

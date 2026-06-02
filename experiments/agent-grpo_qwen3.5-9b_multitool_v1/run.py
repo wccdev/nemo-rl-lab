@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-# 多轮 Agent（工具调用）GRPO 训练脚本（NeMo-RL 0.6.0）。
-# 改编自官方 examples/run_grpo_sliding_puzzle.py，把环境换成自定义计算器工具环境，
-# 数据集换成随机算术题。由本实验 run.sh 通过 ENTRY 自动调用。
+# 多轮多工具 Agent（检索 + 计算 + 代码执行）GRPO 训练脚本（NeMo-RL 0.6.0）。
+# 改编自官方 examples/run_grpo_sliding_puzzle.py：环境换成自定义多工具环境，
+# 数据集随机生成三类需要工具的任务。由本实验 run.sh 通过 ENTRY 自动调用。
 import argparse
 import itertools
 import os
@@ -12,9 +12,7 @@ from typing import Any, Iterator
 
 from omegaconf import OmegaConf
 from torch.utils.data import IterableDataset
-from transformers import AutoTokenizer
 
-# 让 `import common.*` 能找到仓库根目录
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
 if REPO_ROOT not in sys.path:
@@ -34,46 +32,66 @@ from nemo_rl.utils.logger import get_next_experiment_dir
 
 from common.environments.example_tool_env import ToolAgentEnv, safe_eval
 
-TASK_NAME = "calc_tool"
+TASK_NAME = "tool_agent"
 STOP_STRINGS = ["</tool>", "</answer>"]
+ITEMS = ["苹果", "香蕉", "橙子", "牛奶", "面包", "鸡蛋", "咖啡", "茶叶"]
+
+PROMPT_HEADER = (
+    "你是一个会使用工具的智能体。请通过调用工具解决问题，再给出最终数值答案。\n"
+    "可用工具（每次单独一行调用）：\n"
+    "- calc：计算算术表达式，如 <tool>calc: 2+3*4</tool>\n"
+    "- search：检索题目提供的资料，如 <tool>search: 苹果 单价</tool>\n"
+    "- python：执行 Python 代码并打印结果，如 <tool>python: print(sum(i*i for i in range(1,6)))</tool>\n"
+    "得到结果后用如下格式给出最终答案：<answer>数值</answer>\n"
+)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="多轮工具调用 GRPO 训练")
+    parser = argparse.ArgumentParser(description="多轮多工具 GRPO 训练")
     parser.add_argument("--config", type=str, default=None, help="YAML 配置路径")
     args, overrides = parser.parse_known_args()
     return args, overrides
 
 
-def _make_problem(max_number: int, num_operands: int) -> tuple[str, float]:
-    """随机生成一道只含 + - * 的算术题，返回 (题面表达式, 正确答案)。"""
+def _make_arith(max_number: int, num_operands: int) -> tuple[str, float]:
     ops = ["+", "-", "*"]
     nums = [str(random.randint(1, max_number)) for _ in range(num_operands)]
-    expr_parts = [nums[0]]
+    parts = [nums[0]]
     for n in nums[1:]:
-        expr_parts.append(random.choice(ops))
-        expr_parts.append(n)
-    expr = " ".join(expr_parts)
+        parts += [random.choice(ops), n]
+    expr = " ".join(parts)
     return expr, safe_eval(expr)
 
 
-def _build_prompt(question: str) -> str:
-    return (
-        "你是一个会使用工具的智能体。请通过调用计算器工具求解算式，然后给出最终答案。\n"
-        "可用工具：\n"
-        "- calc：计算一个算术表达式。调用格式（单独一行）：<tool>calc: 2+3*4</tool>\n"
-        "当你得到结果后，用如下格式给出最终答案：<answer>数值</answer>\n"
-        f"算式：{question}\n"
-        "请先调用计算器，再回答。"
-    )
+def _make_task(env_cfg: dict[str, Any]) -> tuple[str, float, dict[str, str]]:
+    """随机生成一个需要工具的任务，返回 (题面, 正确答案, 知识库)。"""
+    max_number = int(env_cfg.get("max_number", 50))
+    kind = random.choice(["calc", "search_calc", "code"])
+
+    if kind == "calc":
+        expr, target = _make_arith(max_number, int(env_cfg.get("num_operands", 3)))
+        return (f"计算 {expr} 的结果（用 calc 工具）。", target, {})
+
+    if kind == "search_calc":
+        item = random.choice(ITEMS)
+        price = random.randint(2, max_number)
+        qty = random.randint(2, 9)
+        # 知识库：目标事实 + 干扰项
+        kb = {f"{item}单价": f"{item}的单价是 {price} 元"}
+        for other in random.sample([x for x in ITEMS if x != item], k=3):
+            kb[f"{other}单价"] = f"{other}的单价是 {random.randint(2, max_number)} 元"
+        q = f"买 {qty} 个{item}一共多少钱？先用 search 查{item}单价，再用 calc 计算。"
+        return (q, float(price * qty), kb)
+
+    # code：用 python 求 1..N 的平方和
+    n = random.randint(5, 20)
+    target = sum(i * i for i in range(1, n + 1))
+    return (f"求 1 到 {n} 的所有整数的平方和（用 python 工具计算）。", float(target), {})
 
 
 def generate_datum(tokenizer, env_cfg: dict[str, Any], idx: int) -> DatumSpec:
-    question, target = _make_problem(
-        max_number=int(env_cfg.get("max_number", 50)),
-        num_operands=int(env_cfg.get("num_operands", 3)),
-    )
-    prompt = _build_prompt(question)
+    question, target, kb = _make_task(env_cfg)
+    prompt = PROMPT_HEADER + f"问题：{question}"
     prompt_text = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}],
         tokenize=False,
@@ -92,6 +110,8 @@ def generate_datum(tokenizer, env_cfg: dict[str, Any], idx: int) -> DatumSpec:
         "max_turns": int(env_cfg.get("max_turns", 6)),
         "question": question,
         "answer_tolerance": float(env_cfg.get("answer_tolerance", 1e-6)),
+        "kb": kb,
+        "code_timeout": float(env_cfg.get("code_timeout", 5)),
     }
     return {
         "message_log": message_log,
