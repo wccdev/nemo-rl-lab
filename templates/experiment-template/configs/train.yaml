@@ -1,2 +1,0 @@
-# 训练配置：从 configs/<method>/ 拷贝对应模板改写。
-# 这里留空占位，新建实验后替换为实际 sft / grpo / agent-grpo 配置。

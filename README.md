@@ -1,6 +1,6 @@
 # nemo-rl-lab
 
-基于 **NVIDIA NeMo-RL** 的大模型微调实验室。涵盖：
+基于 **NVIDIA NeMo-RL 0.6.0** 的大模型微调实验室。涵盖：
 
 - **SFT**（监督微调）
 - **GRPO / 强化学习**（RL）
@@ -15,7 +15,7 @@
 | `gb10-spark` | 2× NVIDIA DGX Spark（GB10 Grace-Blackwell），通过 Ray 组成 2 节点集群 | `cluster/gb10-spark/` |
 | `h200` | NVIDIA H200（后续使用），SFT / GRPO 均会涉及 | `cluster/h200/` |
 
-训练配置与硬件解耦：实验里只描述「训什么」，硬件资源（节点数、GPU 数、并行度）由 `cluster/<profile>/` 提供，切换硬件只换 profile。
+训练配置与硬件解耦：NeMo-RL 0.6.0 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`，切换硬件只换 profile。
 
 ## 目录结构
 
@@ -34,14 +34,13 @@ nemo-rl-lab/
 ├── cluster/                  # 硬件 / 分布式 profile（与训练解耦）
 │   ├── gb10-spark/           # 2× DGX Spark GB10
 │   └── h200/                 # H200
-├── configs/                  # 公共配置模板（按方法分）
+├── configs/                  # 按方法的推荐 override（速查表，非完整 yaml）
 │   ├── sft/
 │   ├── grpo/
 │   └── agent/
 ├── common/                   # 跨实验复用代码
-│   ├── data/                 # 数据处理 / 格式转换
-│   ├── rewards/              # GRPO 奖励函数库
-│   ├── callbacks/            # SwanLab logger 等
+│   ├── data/                 # 数据处理 / data processor
+│   ├── environments/         # 自定义 Environment（GRPO 奖励来源 / 多轮 Agent）
 │   └── utils/
 ├── datasets/                 # 数据集「元数据」（不放大文件，见下方约定）
 ├── templates/                # 新实验脚手架模板
@@ -49,6 +48,10 @@ nemo-rl-lab/
 ├── experiments/              # 练习 / 探索性实验
 └── projects/                 # 正式 / 交付级项目
 ```
+
+> 工作流：实验不存完整 yaml，而是用官方 v0.6.0 example 配置作 `--config` 基底
+> （见 `configs/README.md` 的方法对照表），实验级改动写在各实验的 `overrides.conf`，
+> 由 `run.sh` 合成 `uv run python <entry> --config <base> key=value ...` 命令。
 
 ## experiments vs projects
 
@@ -83,14 +86,19 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 ## 新建一个实验
 
 ```bash
-# 把模板复制为新实验（练习放 experiments/，正式放 projects/）
-cp -r templates/experiment-template experiments/grpo_qwen3.5-4b_gsm8k_v1
+# 从模板生成新实验（练习放 experiments/，正式放 projects/）
+bash scripts/new_experiment.sh experiments grpo_qwen3.5-4b_gsm8k_v1
 cd experiments/grpo_qwen3.5-4b_gsm8k_v1
-# 1. 改 README.md：写明目标 / 基础模型 / 数据集 / SwanLab 项目名
-# 2. 改 configs/ 下的训练配置
-# 3. 选硬件 profile 后运行 run.sh
+# 1. 改 README.md：目标 / 基础模型 / 数据集 / SwanLab 项目名
+# 2. 在 run.sh 顶部设 ENTRY 与 BASE_CONFIG（见 configs/README.md）
+# 3. 把 configs/<method>/overrides.example.conf 拷进 overrides.conf 并修改
+# 4. 选硬件 profile 运行：
+NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 ```
 
 ## 快速开始
 
-环境安装见 [`env/README.md`](env/README.md)，SwanLab 配置见 [`docs/swanlab.md`](docs/swanlab.md)。
+1. 装 NeMo-RL 0.6.0 与依赖：[`env/README.md`](env/README.md)
+2. 配置 SwanLab：[`docs/swanlab.md`](docs/swanlab.md)
+3. 集群 / 硬件 profile：[`cluster/README.md`](cluster/README.md)、[`docs/setup-dgx-spark-gb10.md`](docs/setup-dgx-spark-gb10.md)
+4. 命名规范：[`docs/naming-convention.md`](docs/naming-convention.md)

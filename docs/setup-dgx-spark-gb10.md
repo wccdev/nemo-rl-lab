@@ -39,14 +39,16 @@ ray status   # 应能看到 2 个节点的资源
 
 ## 3. 在该 profile 上跑训练
 
-实验的 `run.sh` 通过 `CLUSTER_PROFILE=gb10-spark` 选择本 profile：
+实验的 `run.sh` 通过 `CLUSTER_PROFILE=gb10-spark` 选择本 profile，并自动追加
+`cluster/gb10-spark/overrides.conf` 里的覆盖项（`cluster.num_nodes=2` 等）：
 
 ```bash
-CLUSTER_PROFILE=gb10-spark bash run.sh
+NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 ```
 
 ## 4. 资源与并行度建议
 
 - GB10 为统一内存架构，单卡可用显存较大但带宽 / 算力与数据中心卡不同，**batch size、序列长度需实测**。
-- 2 节点优先用数据并行；模型较大时再叠加张量 / 流水并行（在 `cluster/gb10-spark/profile.yaml` 配置）。
-- GRPO 的 rollout（生成）开销大，建议把 vLLM 推理与训练的资源划分写进 profile。
+- 2 节点优先用数据并行（DTensor/FSDP 在 `num_nodes*gpus_per_node` 张卡上分片）；跨节点张量并行（TP）通常不划算，保持 `policy.dtensor_cfg.tensor_parallel_size=1`。
+- GRPO 的 rollout（vLLM 生成）开销大：默认 `colocated.enabled=true` 与训练共用 GPU；资源紧张可在 `overrides.conf` 调整。
+- 这些都写在 `cluster/gb10-spark/overrides.conf`，按实测调整。

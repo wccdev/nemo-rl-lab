@@ -1,34 +1,40 @@
 # 环境与依赖
 
-本仓库以 **NVIDIA NeMo-RL** 为主框架。由于硬件横跨两种架构，依赖按架构分别维护。
+本仓库以 **NVIDIA NeMo-RL 0.6.0** 为主框架。NeMo-RL 用 **`uv`** 管理依赖与运行（`uv run python ...`）。由于硬件横跨两种架构，依赖按架构分别维护。
 
 ## 架构差异
 
 | 硬件 | 架构 | 安装方式 |
 | --- | --- | --- |
-| DGX Spark GB10 | aarch64 + Blackwell | 用 NVIDIA 提供的 aarch64 容器 / wheel |
-| H200 | x86_64 + Hopper | 用 x86_64 容器 / wheel |
+| DGX Spark GB10 | aarch64 + Blackwell | aarch64 容器 / wheel |
+| H200 | x86_64 + Hopper | x86_64 容器 / wheel |
 
-强烈建议用 **NeMo / NeMo-RL 官方容器镜像** 跑训练，避免手装 CUDA / 依赖踩坑。
+强烈建议用 **NeMo-RL 官方容器镜像** 跑训练，避免手装 CUDA / 依赖踩坑。
 
-## 安装 NeMo-RL
+## 安装 NeMo-RL 0.6.0
 
 ```bash
-# 方式一（推荐）：官方容器
-# docker run --gpus all -it --rm nvcr.io/nvidia/nemo:<tag>
-
-# 方式二：源码安装（按官方文档为准）
-git clone https://github.com/NVIDIA/NeMo-RL.git
+git clone --branch v0.6.0 https://github.com/NVIDIA-NeMo/RL.git NeMo-RL
 cd NeMo-RL
-pip install -e .
+# NeMo-RL 用 uv 管理环境；首次运行会自动建虚拟环境
+uv sync
+# 验证
+uv run python examples/run_grpo.py --help
 ```
 
-> NeMo-RL 的具体安装命令、镜像 tag 以官方文档为准；不同版本对多轮 Agent 训练的支持不同，记录在各实验 README 里。
+> 具体安装命令、容器 tag、各 backend（DTensor / Megatron）的额外依赖以 v0.6.0 官方文档为准。
+> 把克隆下来的 NeMo-RL 目录路径设为 `NEMO_RL_DIR`，实验 `run.sh` 会用到。
+
+## 运行实验
+
+```bash
+NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash experiments/<exp>/run.sh
+```
 
 ## 通用 Python 依赖
 
-见 `requirements.txt`（轻量工具依赖；重型框架走容器）。
+`requirements.txt` 只含本仓库脚手架/数据处理用到的轻量依赖；重型框架（NeMo-RL / vLLM / Ray / CUDA）由 NeMo-RL 的 `uv` 环境或官方容器提供。
 
 ## 密钥
 
-`SWANLAB_API_KEY`、HuggingFace token 等放到仓库根目录的本地 `.env`（已被 `.gitignore` 排除），不要入库。
+`SWANLAB_API_KEY`、HuggingFace token 等放仓库根目录本地 `.env`（已 `.gitignore`），不要入库。
