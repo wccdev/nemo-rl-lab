@@ -7,14 +7,12 @@
 
 一句话说明这个实验要验证 / 达成什么。
 
-## 配置（NeMo-RL 0.6.0）
+## 配置（NeMo-RL 0.6.0，配置继承）
 
-- 基础模型：`Qwen/Qwen3.5-?B`
-- 数据集：`<dataset>`
-- 方法：`SFT | GRPO | 多轮 Agent`
-- 入口 / 基底：在 `run.sh` 顶部设 `ENTRY` 与 `BASE_CONFIG`（见 `configs/README.md` 的方法对照表）
-- 硬件 profile：`gb10-spark | h200`
-- 关键 override 写在本目录 `overrides.conf`
+- `config.yaml` 通过 `defaults` 继承基底（`configs/base/`）+ 模型片段（`configs/models/`），
+  **只写本实验差异**；不断调参就改 `config.yaml` 的「本实验差异」部分。
+- 入口在 `run.sh` 顶部设 `ENTRY`（GRPO / SFT），见 `configs/README.md` 方法对照表。
+- 硬件 profile：`gb10-spark | h200`（`cluster/<profile>/overrides.conf` 运行时叠加）。
 
 ## SwanLab
 
@@ -25,11 +23,10 @@
 ## 运行
 
 ```bash
-# 先准备好 NeMo-RL 0.6.0 源码，并（多节点时）拉起 Ray 集群
 NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 ```
 
-产物（checkpoint / 日志）会落到本目录 `outputs/`（已 .gitignore）。
+产物（checkpoint / 日志）落到本目录 `outputs/`（已 .gitignore）。
 
 ## 结果与结论
 

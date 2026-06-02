@@ -4,10 +4,8 @@
 set -euo pipefail
 
 # ===================== 按实验修改 =====================
-# 训练入口（相对 NeMo-RL 源码目录）：run_sft.py / run_grpo.py
+# 训练入口（相对 NeMo-RL 源码目录）：examples/run_grpo.py | examples/run_sft.py
 ENTRY="${ENTRY:-examples/run_grpo.py}"
-# 基础配置（官方 v0.6.0 example，相对 NeMo-RL 源码目录）
-BASE_CONFIG="${BASE_CONFIG:-examples/configs/grpo_math_1B.yaml}"
 # =====================================================
 
 # 硬件 profile：gb10-spark | h200
@@ -17,24 +15,21 @@ NEMO_RL_DIR="${NEMO_RL_DIR:?请设置 NEMO_RL_DIR 指向本地 NeMo-RL 0.6.0 源
 
 EXP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXP_DIR}/../.." && pwd)"
+CONFIG="${EXP_DIR}/config.yaml"                        # 继承基底 + 本实验差异
 PROFILE_CONF="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/overrides.conf"
-EXP_CONF="${EXP_DIR}/overrides.conf"
 
 read_conf() { [[ -f "$1" ]] && grep -vE '^[[:space:]]*(#|$)' "$1" || true; }
 
+# 集群/硬件 override（CLI，运行时按 profile 叠加）+ 产物落到实验目录
 OVERRIDES=()
-# 1) 硬件 profile 覆盖
 while IFS= read -r l; do [[ -n "$l" ]] && OVERRIDES+=("$l"); done < <(read_conf "${PROFILE_CONF}")
-# 2) 自动把产物落到实验目录（可被下方 overrides.conf 覆盖）
 OVERRIDES+=("checkpointing.checkpoint_dir=${EXP_DIR}/outputs")
 OVERRIDES+=("logger.log_dir=${EXP_DIR}/outputs/logs")
-# 3) 实验自身覆盖（模型/数据/超参/SwanLab）
-while IFS= read -r l; do [[ -n "$l" ]] && OVERRIDES+=("$l"); done < <(read_conf "${EXP_CONF}")
 
 echo "[run] profile : ${CLUSTER_PROFILE}"
 echo "[run] entry   : ${ENTRY}"
-echo "[run] base    : ${BASE_CONFIG}"
-echo "[run] overrides:"; printf '          %s\n' "${OVERRIDES[@]}"
+echo "[run] config  : ${CONFIG}"
+echo "[run] cluster/产物 overrides:"; printf '          %s\n' "${OVERRIDES[@]}"
 
 cd "${NEMO_RL_DIR}"
-exec uv run python "${ENTRY}" --config "${BASE_CONFIG}" "${OVERRIDES[@]}"
+exec uv run python "${ENTRY}" --config "${CONFIG}" "${OVERRIDES[@]}"

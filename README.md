@@ -34,10 +34,9 @@ nemo-rl-lab/
 ├── cluster/                  # 硬件 / 分布式 profile（与训练解耦）
 │   ├── gb10-spark/           # 2× DGX Spark GB10
 │   └── h200/                 # H200
-├── configs/                  # 按方法的推荐 override（速查表，非完整 yaml）
-│   ├── sft/
-│   ├── grpo/
-│   └── agent/
+├── configs/                  # 配置继承体系（NeMo-RL 原生 defaults）
+│   ├── base/                 # 祖父：官方 v0.6.0 example 原样副本（勿手改）
+│   └── models/               # 父：各基础模型公共片段（qwen3.5-4b / 9b ...）
 ├── common/                   # 跨实验复用代码
 │   ├── data/                 # 数据处理 / data processor
 │   ├── environments/         # 自定义 Environment（GRPO 奖励来源 / 多轮 Agent）
@@ -49,9 +48,9 @@ nemo-rl-lab/
 └── projects/                 # 正式 / 交付级项目
 ```
 
-> 工作流：实验不存完整 yaml，而是用官方 v0.6.0 example 配置作 `--config` 基底
-> （见 `configs/README.md` 的方法对照表），实验级改动写在各实验的 `overrides.conf`，
-> 由 `run.sh` 合成 `uv run python <entry> --config <base> key=value ...` 命令。
+> 配置工作流：每个实验有自己的 `config.yaml`，通过 `defaults` **继承基底 + 模型片段，只写差异**
+> （NeMo-RL 0.6.0 原生支持，官方亦如此）。`run.sh` 以该 `config.yaml` 为 `--config`，运行时再叠加
+> `cluster/<profile>/overrides.conf` 的硬件 override。详见 `configs/README.md`。
 
 ## experiments vs projects
 
@@ -90,8 +89,8 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 bash scripts/new_experiment.sh experiments grpo_qwen3.5-4b_gsm8k_v1
 cd experiments/grpo_qwen3.5-4b_gsm8k_v1
 # 1. 改 README.md：目标 / 基础模型 / 数据集 / SwanLab 项目名
-# 2. 在 run.sh 顶部设 ENTRY 与 BASE_CONFIG（见 configs/README.md）
-# 3. 把 configs/<method>/overrides.example.conf 拷进 overrides.conf 并修改
+# 2. 改 config.yaml：选 defaults（基底 + 模型片段），写本实验差异（lr/kl/数据集/swanlab）
+# 3. 若是 SFT/Agent，在 run.sh 顶部把 ENTRY 改成对应入口（见 configs/README.md）
 # 4. 选硬件 profile 运行：
 NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 ```
