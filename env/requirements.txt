@@ -1,0 +1,8 @@
+# 轻量工具依赖（重型框架 NeMo-RL / vLLM / CUDA 走官方容器，见 env/README.md）
+swanlab
+datasets
+huggingface_hub
+transformers
+pyyaml
+rich
+# ray  # 通常随 NeMo-RL 容器提供，按需取消注释

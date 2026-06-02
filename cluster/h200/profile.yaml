@@ -1,0 +1,22 @@
+# 硬件 profile: H200（后续使用）
+# 资源与并行度，被实验 run.sh 读取并叠加到训练配置上。数值需按实际节点/卡数调整。
+profile: h200
+arch: x86_64
+accelerator: h200-hopper
+
+cluster:
+  launcher: ray            # 多节点时用 ray；单机可直接 torchrun
+  num_nodes: 1
+  gpus_per_node: 8         # 按实际填写
+  head_address: "localhost:6379"
+
+parallel:
+  tensor_parallel: 1
+  pipeline_parallel: 1
+  data_parallel: 8
+
+rollout:
+  backend: vllm
+  gpu_fraction: 0.4
+
+notes: "H200 单卡 141GB HBM3e，显存充足，可增大 batch/上下文/rollout 并发。"

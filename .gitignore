@@ -1,0 +1,67 @@
+# ============ 训练产物 / 大文件（绝不入库）============
+# checkpoint / 权重
+outputs/
+output/
+results/
+checkpoints/
+ckpt/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.nemo
+*.gguf
+hf_export/
+exported_model/
+
+# 数据（只入库元数据与处理脚本，原始/大数据本地或对象存储）
+datasets/**/raw/
+datasets/**/data/
+data/raw/
+*.arrow
+*.parquet
+*.jsonl.gz
+# 若数据集较小需入库，删除对应忽略行或用 git-lfs
+
+# 日志（SwanLab 本地缓存 / 其他 tracker）
+swanlog/
+swanlab/
+wandb/
+mlruns/
+logs/
+*.log
+tensorboard/
+events.out.tfevents.*
+
+# Ray / 分布式临时文件
+ray_results/
+/tmp/ray/
+*.pid
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/.venv/
+.python-version
+
+# ============ 密钥 / 本地配置 ============
+.env
+.env.*
+*.key
+secrets.*
+*.local.yaml
+*.local.yml
+
+# ============ 系统 / 编辑器 ============
+.DS_Store
+.idea/
+.vscode/
+*.swp

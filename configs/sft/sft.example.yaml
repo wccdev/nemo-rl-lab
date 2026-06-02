@@ -1,0 +1,26 @@
+# SFT 模板（NeMo-RL）。字段以所用版本为准；硬件并行度放 cluster/<profile>/profile.yaml。
+policy:
+  model_name: "Qwen/Qwen3.5-4B"     # 基础模型
+  max_seq_len: 4096
+  precision: bf16
+
+data:
+  train_path: "datasets/<name>/train.jsonl"
+  val_path: "datasets/<name>/val.jsonl"
+  prompt_template: chat            # 按数据格式
+
+train:
+  global_batch_size: 64
+  micro_batch_size: 1
+  lr: 1.0e-5
+  warmup_ratio: 0.03
+  epochs: 3
+  save_steps: 200
+
+logger:
+  swanlab:
+    project: "sft_qwen3.5-4b_<dataset>_v1"
+    experiment_name: "lr1e5-bs64"
+    tags: ["sft", "qwen3.5-4b"]
+
+output_dir: "outputs"

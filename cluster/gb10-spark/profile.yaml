@@ -1,0 +1,24 @@
+# 硬件 profile: 2x DGX Spark GB10
+# 资源与并行度，被实验 run.sh 读取并叠加到训练配置上。数值需按实测调整。
+profile: gb10-spark
+arch: aarch64
+accelerator: gb10-grace-blackwell
+
+cluster:
+  launcher: ray
+  num_nodes: 2
+  gpus_per_node: 1          # 每台 Spark 一颗 GB10，按实际填写
+  head_address: "spark-0:6379"
+
+parallel:
+  # GB10 统一内存：优先数据并行，模型大再叠加 TP/PP
+  tensor_parallel: 1
+  pipeline_parallel: 1
+  data_parallel: 2
+
+rollout:
+  # GRPO/agent 训练中生成阶段（vLLM）的资源划分，按实测调整
+  backend: vllm
+  gpu_fraction: 0.4
+
+notes: "GB10 为 ARM64+Blackwell，统一内存；batch size / 序列长度需实测。"
