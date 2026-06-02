@@ -95,6 +95,16 @@ cd experiments/grpo_qwen3.5-4b_gsm8k_v1
 NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 ```
 
+## 示例实验（覆盖三种方法）
+
+| 实验 | 方法 | 说明 |
+| --- | --- | --- |
+| [`experiments/sft_qwen3.5-4b_alpaca_v1`](experiments/sft_qwen3.5-4b_alpaca_v1) | SFT | Alpaca 指令监督微调（本地 jsonl + ResponseDataset） |
+| [`experiments/grpo_qwen3.5-9b_gsm8k_v1`](experiments/grpo_qwen3.5-9b_gsm8k_v1) | GRPO（单轮） | GSM8K 数学推理，math 环境验证 |
+| [`experiments/agent-grpo_qwen3.5-9b_multitool_v1`](experiments/agent-grpo_qwen3.5-9b_multitool_v1) | GRPO（多轮 Agent） | 多工具（检索/计算/代码）调用，自定义环境 |
+
+数据预处理脚本见 `common/data/`（gsm8k / alpaca）。自定义环境见 `common/environments/`。
+
 ## 快速开始
 
 1. 装 NeMo-RL 0.6.0 与依赖：[`env/README.md`](env/README.md)

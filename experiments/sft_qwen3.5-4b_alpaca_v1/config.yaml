@@ -1,0 +1,55 @@
+# SFT 实验：qwen3.5-4b 在 Alpaca 指令数据上做监督微调（补齐 SFT/GRPO/Agent 三种方法）。
+# 继承官方 sft.yaml 基底 + qwen3.5-4b 片段，只写差异。官方入口 examples/run_sft.py
+# （run.sh 已默认 SFT 入口）。
+defaults:
+  - ../../configs/base/sft.yaml
+  - ../../configs/models/qwen3.5-4b.yaml
+
+policy:
+  max_total_sequence_length: 2048
+  # 基底 sft.yaml 设了 squad 专用 chat_template；指令数据用模型默认模板，置 null
+  tokenizer:
+    chat_template: null
+  optimizer:
+    kwargs:
+      lr: 5.0e-6
+
+sft:
+  max_num_epochs: 3
+  max_num_steps: 2000
+  val_period: 100
+
+# 用 ResponseDataset 接预处理好的 Alpaca jsonl（见 common/data/prepare_alpaca.py）。
+# 先跑预处理脚本，再 `export ALPACA_DATA_DIR=<repo>/datasets/alpaca`。
+data:
+  _override_: true
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  add_bos: true
+  add_eos: true
+  add_generation_prompt: false
+  shuffle: true
+  num_workers: 1
+  train:
+    data_path: ${oc.env:ALPACA_DATA_DIR}/train.jsonl
+    input_key: input
+    output_key: output
+  validation:
+    data_path: ${oc.env:ALPACA_DATA_DIR}/val.jsonl
+    input_key: input
+    output_key: output
+  default:
+    dataset_name: ResponseDataset
+    input_key: input
+    output_key: output
+    prompt_file: null
+    system_prompt_file: null
+    processor: "sft_processor"
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: false
+  swanlab_enabled: true
+  monitor_gpus: true
+  swanlab:
+    project: "sft_qwen3.5-4b_alpaca_v1"
+    name: "lr5e6-bs32-ep3"
