@@ -20,4 +20,7 @@ fi
 cp -r "${REPO_ROOT}/templates/experiment-template" "${DEST}"
 rm -f "${DEST}/.gitkeep"
 echo "已创建实验: ${DEST}"
-echo "下一步: 编辑 ${DEST}/README.md 与 ${DEST}/configs/train.yaml"
+echo "下一步:"
+echo "  1. 编辑 ${DEST}/README.md（目标 / 模型 / 数据 / SwanLab）"
+echo "  2. 编辑 ${DEST}/config.yaml（选 defaults 基底+模型，写本实验差异）"
+echo "  3. 若是 SFT/Agent，改 ${DEST}/run.sh 的 ENTRY（见 configs/README.md）"

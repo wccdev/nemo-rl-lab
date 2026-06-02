@@ -21,6 +21,7 @@
 
 ```
 nemo-rl-lab/
+├── lab                       # 统一 CLI 入口（所有操作的封装）
 ├── README.md                 # 本文件：总览
 ├── .gitignore
 ├── docs/                     # 文档
@@ -82,17 +83,32 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 
 字段间用 `_` 分隔，字段内（如模型名 `qwen3.5-4b`）用 `-`，避免歧义。完整规则见 [`docs/naming-convention.md`](docs/naming-convention.md)。
 
-## 新建一个实验
+## 统一 CLI（`./lab`）
+
+所有操作都通过根目录的 `./lab` 入口（纯标准库，Mac 可直接跑）：
 
 ```bash
-# 从模板生成新实验（练习放 experiments/，正式放 projects/）
-bash scripts/new_experiment.sh experiments grpo_qwen3.5-4b_gsm8k_v1
+./lab ls                                # 列出实验 / 项目
+./lab new grpo_qwen3.5-4b_gsm8k_v1      # 从模板新建实验
+./lab prepare gsm8k                     # 预处理数据集（gsm8k / alpaca）
+./lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（执行在集群）
+./lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   # 在集群容器内直接跑
+./lab ray head                          # 启动 Ray head（在 head 节点容器内）
+./lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底配置
+```
+
+`./lab <子命令> --help` 看每个命令的参数。CLI 只是对 `scripts/` 与各实验脚本的封装，单一事实来源。
+
+## 新建一个实验（细节）
+
+```bash
+./lab new grpo_qwen3.5-4b_gsm8k_v1      # 或 bash scripts/new_experiment.sh experiments <name>
 cd experiments/grpo_qwen3.5-4b_gsm8k_v1
 # 1. 改 README.md：目标 / 基础模型 / 数据集 / SwanLab 项目名
 # 2. 改 config.yaml：选 defaults（基底 + 模型片段），写本实验差异（lr/kl/数据集/swanlab）
 # 3. 若是 SFT/Agent，在 run.sh 顶部把 ENTRY 改成对应入口（见 configs/README.md）
-# 4. 选硬件 profile 运行：
-NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
+# 4. 提交到集群（推荐）或在集群容器内直接跑：
+./lab submit grpo_qwen3.5-4b_gsm8k_v1
 ```
 
 ## 示例实验（覆盖三种方法）

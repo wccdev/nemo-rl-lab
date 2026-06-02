@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""nemo-rl-lab 统一 CLI 入口。
+
+所有操作都通过 `./lab <子命令>` 执行；内部调用 scripts/ 与各实验的脚本（单一事实来源）。
+纯标准库实现，开发机（Mac）可直接运行。
+
+常用：
+    ./lab ls                                  列出实验 / 项目
+    ./lab new grpo_qwen3.5-4b_gsm8k_v1         从模板新建实验
+    ./lab prepare gsm8k                        预处理数据集
+    ./lab submit agent-grpo_qwen3.5-9b_multitool_v1   从本机提交作业到 Ray 集群
+    ./lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   在集群容器内直接跑
+    ./lab ray head                             启动 Ray head（在 head 节点容器内）
+    ./lab sync-base --nemo-rl /opt/NeMo-RL     同步官方基底配置
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SCRIPTS = ROOT / "scripts"
+DATA_PREP = {
+    "gsm8k": ROOT / "common" / "data" / "prepare_gsm8k.py",
+    "alpaca": ROOT / "common" / "data" / "prepare_alpaca.py",
+}
+
+
+def _run(cmd: list[str], env: dict | None = None, cwd: Path | None = None) -> int:
+    """打印并执行命令，返回退出码。"""
+    print("›", " ".join(str(c) for c in cmd))
+    full_env = {**os.environ, **(env or {})}
+    return subprocess.run(cmd, env=full_env, cwd=str(cwd or ROOT)).returncode
+
+
+def _resolve_exp(name: str) -> str:
+    """把实验名解析为相对仓库根的路径，接受 'experiments/x' / 'projects/x' / 'x'。"""
+    cands = [name] if "/" in name else [f"experiments/{name}", f"projects/{name}"]
+    for c in cands:
+        if (ROOT / c).is_dir():
+            return c
+    sys.exit(f"找不到实验: {name}（已尝试: {', '.join(cands)}）")
+
+
+# ----------------------------- 子命令实现 -----------------------------
+def cmd_ls(args: argparse.Namespace) -> int:
+    for kind in ("experiments", "projects"):
+        base = ROOT / kind
+        if not base.is_dir():
+            continue
+        exps = sorted(p.name for p in base.iterdir() if p.is_dir())
+        print(f"\n[{kind}] ({len(exps)})")
+        for e in exps:
+            print(f"  - {e}")
+    return 0
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    return _run(["bash", str(SCRIPTS / "new_experiment.sh"), args.kind, args.name])
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    script = DATA_PREP.get(args.dataset)
+    if not script:
+        sys.exit(f"未知数据集: {args.dataset}（可选: {', '.join(DATA_PREP)}）")
+    return _run([sys.executable, str(script), *args.extra])
+
+
+def cmd_submit(args: argparse.Namespace) -> int:
+    exp = _resolve_exp(args.exp)
+    cmd = ["bash", str(SCRIPTS / "submit_job.sh"), exp]
+    if args.profile:
+        cmd.append(args.profile)
+    return _run(cmd)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    exp = _resolve_exp(args.exp)
+    env = {}
+    if args.nemo_rl:
+        env["NEMO_RL_DIR"] = args.nemo_rl
+    if args.profile:
+        env["CLUSTER_PROFILE"] = args.profile
+    return _run(["bash", str(ROOT / exp / "run.sh")], env=env)
+
+
+def cmd_sync_base(args: argparse.Namespace) -> int:
+    env = {"NEMO_RL_DIR": args.nemo_rl} if args.nemo_rl else {}
+    return _run(["bash", str(SCRIPTS / "sync_base_configs.sh")], env=env)
+
+
+def cmd_ray(args: argparse.Namespace) -> int:
+    prof_dir = ROOT / "cluster" / args.profile
+    if args.action == "status":
+        return _run(["ray", "status"])
+    if args.action == "head":
+        return _run(["bash", str(prof_dir / "start_ray_head.sh")])
+    if args.action == "worker":
+        env = {"HEAD_ADDRESS": args.head} if args.head else {}
+        return _run(["bash", str(prof_dir / "start_ray_worker.sh")], env=env)
+    return 1
+
+
+# ----------------------------- 参数解析 -----------------------------
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="lab", description="nemo-rl-lab 统一 CLI")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sp = sub.add_parser("ls", help="列出实验 / 项目")
+    sp.set_defaults(func=cmd_ls)
+
+    sp = sub.add_parser("new", help="从模板新建实验")
+    sp.add_argument("name", help="实验名（见 docs/naming-convention.md）")
+    sp.add_argument("--kind", choices=["experiments", "projects"], default="experiments")
+    sp.set_defaults(func=cmd_new)
+
+    sp = sub.add_parser("prepare", help="预处理数据集")
+    sp.add_argument("dataset", choices=sorted(DATA_PREP), help="数据集名")
+    sp.add_argument("extra", nargs=argparse.REMAINDER, help="透传给预处理脚本的参数")
+    sp.set_defaults(func=cmd_prepare)
+
+    sp = sub.add_parser("submit", help="从本机提交作业到 Ray 集群（执行在集群）")
+    sp.add_argument("exp", help="实验名或路径")
+    sp.add_argument("--profile", help="硬件 profile（默认取 submit.env）")
+    sp.set_defaults(func=cmd_submit)
+
+    sp = sub.add_parser("run", help="直接运行实验 run.sh（在集群容器内用）")
+    sp.add_argument("exp", help="实验名或路径")
+    sp.add_argument("--profile", help="硬件 profile：gb10-spark | h200")
+    sp.add_argument("--nemo-rl", dest="nemo_rl", help="NeMo-RL 源码目录")
+    sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("sync-base", help="同步官方基底配置到 configs/base/")
+    sp.add_argument("--nemo-rl", dest="nemo_rl", help="NeMo-RL 源码目录")
+    sp.set_defaults(func=cmd_sync_base)
+
+    sp = sub.add_parser("ray", help="Ray 集群管理（在对应节点容器内执行）")
+    sp.add_argument("action", choices=["head", "worker", "status"])
+    sp.add_argument("--profile", default="gb10-spark")
+    sp.add_argument("--head", help="worker 加入的 head 地址，如 spark-0:6379")
+    sp.set_defaults(func=cmd_ray)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

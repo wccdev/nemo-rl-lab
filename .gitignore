@@ -59,6 +59,9 @@ env/.venv/
 secrets.*
 *.local.yaml
 *.local.yml
+# 本地集群提交配置（含 IP / 密钥）
+cluster/submit.env
+cluster/**/hosts
 
 # ============ 系统 / 编辑器 ============
 .DS_Store
