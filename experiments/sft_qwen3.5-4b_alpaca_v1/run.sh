@@ -26,8 +26,13 @@ read_conf() { [[ -f "$1" ]] && grep -vE '^[[:space:]]*(#|$)' "$1" || true; }
 # 集群/硬件 override（CLI，运行时按 profile 叠加）+ 产物落到实验目录
 OVERRIDES=()
 while IFS= read -r l; do [[ -n "$l" ]] && OVERRIDES+=("$l"); done < <(read_conf "${PROFILE_CONF}")
-OVERRIDES+=("checkpointing.checkpoint_dir=${EXP_DIR}/outputs")
-OVERRIDES+=("logger.log_dir=${EXP_DIR}/outputs/logs")
+# 产物（checkpoint + 日志）落盘位置。
+# 远程 lab submit 时 EXP_DIR 在 Ray 上传的临时包目录里（训练结束被清理、不回传 Mac），
+# 故设 OUTPUT_ROOT（建议在 submit.env 配成集群持久路径/共享盘）后产物落到 OUTPUT_ROOT/<实验名>。
+EXP_NAME="$(basename "${EXP_DIR}")"
+if [[ -n "${OUTPUT_ROOT:-}" ]]; then OUT_DIR="${OUTPUT_ROOT%/}/${EXP_NAME}"; else OUT_DIR="${EXP_DIR}/outputs"; fi
+OVERRIDES+=("checkpointing.checkpoint_dir=${OUT_DIR}")
+OVERRIDES+=("logger.log_dir=${OUT_DIR}/logs")
 
 echo "[run] profile : ${CLUSTER_PROFILE}"
 echo "[run] entry   : ${ENTRY}"

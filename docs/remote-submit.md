@@ -150,7 +150,7 @@ ray job submit \
 
 - ✅ 上传：仓库代码（`common/`、`configs/`、`experiments/` 等）＋ 已准备好的小数据集 jsonl（如 `datasets/gsm8k/`）。自定义环境/奖励靠这个在所有节点被 `import`。
 - ❌ 不上传：`datasets/**/raw/`、`datasets/**/data/`（原始/中间缓存）、`**/outputs/**`、`.git/**`、`__pycache__`、`cluster/submit.env`、`cluster/secrets.env`、`*.key`，以及 `.gitignore` 里命中的路径（如内部数据 `datasets/qa_rl/`）。Ray 默认也遵循 `.gitignore`。
-- 🔑 环境变量：`NEMO_RL_DIR` / `CLUSTER_PROFILE` 必传；`SWANLAB_API_KEY` / `HF_TOKEN` / `HF_ENDPOINT` / `HF_HUB_ENABLE_HF_TRANSFER` / `HF_HOME`、以及 `GSM8K_DATA_DIR` / `ALPACA_DATA_DIR` / `QA_RL_DATA_DIR` 填了才转发（经 Ray `runtime_env`，不落盘）。
+- 🔑 环境变量：`NEMO_RL_DIR` / `CLUSTER_PROFILE` 必传；`SWANLAB_API_KEY` / `HF_TOKEN` / `HF_ENDPOINT` / `HF_HUB_ENABLE_HF_TRANSFER` / `HF_HOME` / `OUTPUT_ROOT`、以及 `GSM8K_DATA_DIR` / `ALPACA_DATA_DIR` / `QA_RL_DATA_DIR` 填了才转发（经 Ray `runtime_env`，不落盘）。`OUTPUT_ROOT` 决定 checkpoint / 样本 jsonl 落到哪（见 §5.1）。
 
 **数据目录怎么定位（重要）**
 
@@ -162,17 +162,50 @@ ray job submit \
 
 ## 5. 监控 / 管理作业（在 Mac）
 
+推荐用 `lab job`（自动从 `cluster/submit.env` 读 `RAY_DASHBOARD_ADDRESS`，无需手敲地址）：
+
+```bash
+uv run lab job list                 # 所有作业
+uv run lab job logs <job_id> -f     # 实时日志（-f 跟随）
+uv run lab job status <job_id>
+uv run lab job stop <job_id>        # 停止作业
+#   临时连别的集群：加 --address http://其它IP:8265
+```
+
+等价的原生命令（需自己带地址）：
+
 ```bash
 ADDR=http://192.168.1.4:8265
-
-ray job list   --address $ADDR              # 所有作业
-ray job logs -f <job_id> --address $ADDR    # 实时日志（-f 跟随）
+ray job list   --address $ADDR
+ray job logs -f <job_id> --address $ADDR
 ray job status <job_id>  --address $ADDR
-ray job stop   <job_id>  --address $ADDR    # 停止作业
+ray job stop   <job_id>  --address $ADDR
 ```
 
 - **Ray Dashboard**：浏览器开 `http://192.168.1.4:8265`，看节点/资源/作业/各 actor 日志。
-- **SwanLab**：训练曲线（reward / val:accuracy / GPU 利用率）在云端看，链接回填到实验 `README.md`。
+- **SwanLab**：训练曲线（reward / val:accuracy / 回答长度 / GPU 利用率）在云端看，链接回填到实验 `README.md`。
+
+### 5.1 排查微调是否走偏 / 工具是否调对（看生成的 token）
+
+SwanLab 只有**指标曲线**，不含模型实际输出的 token。
+
+**先看指标（SwanLab）**：奖励是 答对=1.0/答错=0.0，所以"答对率"就是奖励均值——
+看 `validation/accuracy`（验证集答对率）和 `train/reward`（训练答对率）。
+走偏诊断看 `train/natural_termination_rate`（正常给 `<answer>` 收尾比例）、`train/truncation_rate`（超长截断比例）、
+`train/avg_turns_per_sample`（平均轮数）。
+> ⚠️ 自定义环境 `global_post_process_and_metrics` 返回的指标（如 `tool_agent_success_rate`）在当前 NeMo-RL 的 GRPO 流程里**不会被记录**，别去 SwanLab 找它，用上面的 `validation/accuracy` 即可。
+
+**再看具体生成内容（含工具调用）**，有三种方式：
+
+1. **本地抽取验证轨迹**（Mac 上最方便，无需登集群）：
+   ```bash
+   lab job samples <job_id>            # 全部验证的样本面板
+   lab job samples <job_id> --last 1   # 只看最近一次验证
+   ```
+   它走 dashboard HTTP 把作业日志拉到本机，只保留 prompt+生成（多轮 Agent 含每轮 tool call、工具返回、reward）与结果摘要。条数由 config 的 `logger.num_val_samples_to_print`（默认 3）决定，想看更多就调大重提交。
+2. **整段作业日志**：`lab job logs <job_id> -f`（实时跟随），样本面板也在其中，但夹杂大量进度条。
+3. **每步落盘的 jsonl**（信息最全，但只在集群）：训练每步写 `train_data_step{N}.jsonl`，每次验证写 `val_data_step{N}.jsonl`，到 `OUTPUT_ROOT/<实验名>/logs/`；`content` 是完整生成文本，另含 `rewards` / `advantages` / `token_ids`。该文件**不会上传 SwanLab**，要原始 jsonl 才需进容器看。
+   - ⚠️ 必须在 `submit.env` 设 `OUTPUT_ROOT`（持久路径/共享盘），否则产物落在 Ray 临时目录、训练结束被清理。
 
 ---
 

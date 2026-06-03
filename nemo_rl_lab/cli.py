@@ -13,6 +13,9 @@
     uv run lab new grpo_qwen3.5-4b_gsm8k_v1        从模板新建实验
     uv run lab prepare gsm8k                       预处理数据集
     uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   从本机提交作业到 Ray 集群
+    uv run lab job list                            查看集群上的作业（地址取 submit.env）
+    uv run lab job logs <job_id> -f                实时看作业日志
+    uv run lab job stop <job_id>                   停止作业
     uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   在集群容器内直接跑
     uv run lab ray head                            启动 Ray head（在 head 节点容器内）
     uv run lab sync-base --nemo-rl /opt/NeMo-RL    同步官方基底配置
@@ -56,6 +59,37 @@ def _run(cmd: list[str], env: dict | None = None, cwd: Path | None = None) -> in
     typer.echo("› " + " ".join(str(c) for c in cmd))
     full_env = {**os.environ, **(env or {})}
     return subprocess.run(cmd, env=full_env, cwd=str(cwd or ROOT)).returncode
+
+
+def _read_submit_env() -> dict[str, str]:
+    """读取 cluster/submit.env 的键值（忽略注释/空行），用于取 RAY_DASHBOARD_ADDRESS 等。"""
+    env: dict[str, str] = {}
+    f = ROOT / "cluster" / "submit.env"
+    if f.is_file():
+        for line in f.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env
+
+
+def _ray_address(explicit: Optional[str]) -> str:
+    """确定 Ray dashboard 地址：显式 > 环境变量 > cluster/submit.env。"""
+    addr = explicit or os.environ.get("RAY_DASHBOARD_ADDRESS") or _read_submit_env().get(
+        "RAY_DASHBOARD_ADDRESS"
+    )
+    if not addr:
+        raise typer.BadParameter(
+            "未找到 Ray 地址。请在 cluster/submit.env 设置 RAY_DASHBOARD_ADDRESS，或用 --address 指定。"
+        )
+    return addr
+
+
+def _ray_job(args: list[str], address: str) -> int:
+    """用 uv 管理的 Ray CLI（submit extra，版本对齐集群）执行 `ray job ...`。"""
+    return _run(["uv", "run", "--extra", "submit", "ray", "job", *args, "--address", address])
 
 
 def _resolve_exp(name: str) -> str:
@@ -106,6 +140,7 @@ class RayAction(str, Enum):
     head = "head"
     worker = "worker"
     status = "status"
+    stop = "stop"
 
 
 # ----------------------------- 子命令 -----------------------------
@@ -184,9 +219,10 @@ def sync_base(
 
 @app.command(help="Ray 集群管理（在对应节点容器内执行；ray 由 NeMo-RL 的 uv 环境提供）")
 def ray(
-    action: RayAction = typer.Argument(..., help="head | worker | status"),
+    action: RayAction = typer.Argument(..., help="head | worker | status | stop"),
     profile: str = typer.Option("gb10-spark", "--profile", autocompletion=_complete_profile),
     head: Optional[str] = typer.Option(None, "--head", help="worker 加入的 head 地址，如 192.168.1.4:6379"),
+    force: bool = typer.Option(False, "--force", help="stop 时强杀(SIGKILL)残留进程，更彻底释放显存"),
     nemo_rl: Optional[str] = typer.Option(
         None, "--nemo-rl", help="NeMo-RL 源码目录（uv run ray 用其环境）"
     ),
@@ -195,15 +231,108 @@ def ray(
     env: dict[str, str] = {}
     if nemo_rl:
         env["NEMO_RL_DIR"] = nemo_rl
-    if action is RayAction.status:
+
+    def _ray_cli(args: list[str]) -> int:
+        # ray 由 NeMo-RL 的 uv 环境提供：给了 --nemo-rl 就 `uv run ray`，否则用 PATH 里的 ray
         if nemo_rl:
-            raise typer.Exit(_run(["uv", "run", "ray", "status"], cwd=Path(nemo_rl)))
-        raise typer.Exit(_run(["ray", "status"]))
+            return _run(["uv", "run", "ray", *args], cwd=Path(nemo_rl))
+        return _run(["ray", *args])
+
+    if action is RayAction.status:
+        raise typer.Exit(_ray_cli(["status"]))
+    if action is RayAction.stop:
+        # ray stop 会终止本节点所有 Ray 进程(含训练/vLLM worker)，从而释放它们占用的 GPU 显存。
+        # 注意：这会停掉本机参与的集群，正在跑的训练也会被杀。每个节点都要各自执行。
+        raise typer.Exit(_ray_cli(["stop"] + (["--force"] if force else [])))
     if action is RayAction.head:
         raise typer.Exit(_run(["bash", str(prof_dir / "start_ray_head.sh")], env=env))
     if head:
         env["HEAD_ADDRESS"] = head
     raise typer.Exit(_run(["bash", str(prof_dir / "start_ray_worker.sh")], env=env))
+
+
+# ----------------------------- Ray 作业管理（本机对集群操作）-----------------------------
+job_app = typer.Typer(
+    no_args_is_help=True,
+    help="Ray 作业管理（在本机对集群操作；地址默认取 cluster/submit.env 的 RAY_DASHBOARD_ADDRESS）",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(job_app, name="job")
+
+_ADDR_OPT = typer.Option(None, "--address", "-a", help="Ray dashboard 地址（默认取 submit.env）")
+
+
+@job_app.command("list", help="列出集群作业（精简表格）")
+def job_list(
+    all_jobs: bool = typer.Option(False, "--all", help="显示全部（默认最近 15 条）"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
+           "--address", _ray_address(address)]
+    if all_jobs:
+        cmd.append("--all")
+    raise typer.Exit(_run(cmd))
+
+
+@job_app.command("logs", help="查看作业日志（-f 实时跟随）")
+def job_logs(
+    job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="实时跟随输出"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    args = ["logs", job_id]
+    if follow:
+        args.append("--follow")
+    raise typer.Exit(_ray_job(args, _ray_address(address)))
+
+
+@job_app.command("samples", help="本地查看验证样本轨迹（含多轮工具调用，从作业日志抽取）")
+def job_samples(
+    job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
+    last: int = typer.Option(0, "--last", "-n", help="只看最近 N 次验证（默认 0=全部）"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "job_samples.py"),
+           job_id, "--address", _ray_address(address)]
+    if last:
+        cmd += ["--last", str(last)]
+    raise typer.Exit(_run(cmd))
+
+
+@job_app.command("status", help="查看作业状态")
+def job_status(
+    job_id: str = typer.Argument(..., help="作业 ID"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    raise typer.Exit(_ray_job(["status", job_id], _ray_address(address)))
+
+
+@job_app.command("stop", help="停止作业（运行中 → 终止）")
+def job_stop(
+    job_id: str = typer.Argument(..., help="作业 ID"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    raise typer.Exit(_ray_job(["stop", job_id], _ray_address(address)))
+
+
+@job_app.command("delete", help="删除某个已结束的作业记录（运行中需先 stop）")
+def job_delete(
+    job_id: str = typer.Argument(..., help="作业 ID"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    raise typer.Exit(_ray_job(["delete", job_id], _ray_address(address)))
+
+
+@job_app.command("clean", help="批量删除所有已结束(FAILED/SUCCEEDED/STOPPED)的作业记录")
+def job_clean(
+    yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认"),
+    address: Optional[str] = _ADDR_OPT,
+) -> None:
+    cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
+           "--address", _ray_address(address), "--clean"]
+    if yes:
+        cmd.append("--yes")
+    raise typer.Exit(_run(cmd))
 
 
 if __name__ == "__main__":

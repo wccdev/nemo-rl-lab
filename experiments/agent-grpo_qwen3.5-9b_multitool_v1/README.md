@@ -35,14 +35,21 @@ Agent / 自定义环境 / 多工具链路。
 
 ## 关键超参（GB10 实测起点）
 
+- 模型：`Qwen/Qwen3.5-9B-Base`（与你实测跑通的 9B 数学同款，HF_HOME 已缓存，免再下大文件）。
 - 后端：Megatron-Core + **LoRA**（lr 1e-4/dim8/cosine）。回全参数：删 `defaults` 里 `grpo_lora.yaml`。
+- 生成：**非 colocated**（1 卡生成 / 1 卡训练），需占满整个 2×GB10 集群。
 - batch：`num_prompts_per_step=4` / `num_generations_per_prompt=8` / `train_global_batch_size=32` / `micro=1`。
-- **多轮 + 长上下文显存压力最大**：`seq=3072` 起，OOM 就先降到 2048 或减小 `num_generations_per_prompt` / `max_rollout_turns`。
+- **多轮上下文比单轮长**：`seq=2048` 起（单轮 9B 实测 1250）。OOM 就降到 1536/1024，或减小 `num_generations_per_prompt` / `max_rollout_turns`。
 
 ## SwanLab
 
 - project：`agent-grpo_qwen3.5-9b_multitool_v1`，run：`lora-turns6-g8-lr1e4`，链接：<回填>
-- 指标：`tool_agent_success_rate`（答对率）/ reward / 平均轮数
+- 答对率：`validation/accuracy`（验证集）、`train/reward`（训练 rollout 平均奖励）。
+  注：环境奖励是 答对=1.0/答错=0.0，所以"奖励均值"=答对率。环境里 `global_post_process_and_metrics`
+  返回的 `tool_agent_success_rate` 在当前 NeMo-RL 的 GRPO 流程里不会被记录，别去 SwanLab 找它。
+- 走偏诊断：`train/natural_termination_rate`（正常给 `<answer>` 收尾的比例，越高越好）、
+  `train/truncation_rate`（超长截断比例，越低越好）、`train/avg_turns_per_sample`（平均轮数）、
+  `train/max_turns_reached_rate`（用满 6 轮没答出的比例）、`train/baseline_reward/pct_1`（整组全对比例）。
 
 ## 运行
 

@@ -5,26 +5,36 @@
 defaults:
   - ../../configs/base/grpo_sliding_puzzle.yaml
   - ../../configs/models/qwen3.5-9b.yaml
-  - ../../configs/base/grpo_megatron.yaml   # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
-  - ../../configs/base/grpo_lora.yaml       # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
-  - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
+  - ../../configs/base/grpo_lora.yaml # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
+  - ../../configs/base/grpo_noncolocated.yaml # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 policy:
-  # 多轮 + 工具上下文较长：seq 偏大，显存压力最大。OOM 就先降到 2048 或减小 num_generations。
-  max_total_sequence_length: 3072
-  train_global_batch_size: 32          # = num_prompts_per_step * num_generations_per_prompt
+  # 用已缓存且实测跑通的 base 模型（HF_HOME 里已有，避免再走镜像下大文件）。
+  # 想换 instruct 版改成 "Qwen/Qwen3.5-9B"（需先 prefetch）。
+  model_name: "Qwen/Qwen3.5-9B-Base"
+  tokenizer:
+    name: "Qwen/Qwen3.5-9B-Base"
+  # 多轮 + 工具上下文比单轮数学长：seq 给到 2048（实测 9B 单轮用 1250）。
+  # 显存吃紧就降到 1536/1024，或减小 num_generations_per_prompt / max_rollout_turns。
+  max_total_sequence_length: 2048
+  train_global_batch_size: 32 # = num_prompts_per_step * num_generations_per_prompt
   generation_batch_size: 16
+  generation:
+    # 多轮：限制每轮生成长度，避免 base 模型早期一轮写满整段预算；给 6 轮留空间、省 KV。
+    # 模型学会用 </tool>/</answer> 停下后，实际会更短。
+    max_new_tokens: 512
 
 grpo:
-  num_prompts_per_step: 4              # GB10 实测小 batch
+  num_prompts_per_step: 4 # GB10 实测小 batch
   num_generations_per_prompt: 8
-  max_rollout_turns: 6                 # 多轮：工具调用 + 答题，最多 6 轮
+  max_rollout_turns: 6 # 多轮：工具调用 + 答题，最多 6 轮
   max_num_steps: 200
   val_period: 50
   val_at_start: true
   val_at_end: true
   max_val_samples: 64
-  val_batch_size: 32                   # <= max_val_samples
+  val_batch_size: 32 # <= max_val_samples
 
 loss_fn:
   reference_policy_kl_penalty: 0.01
@@ -40,15 +50,16 @@ env:
     cfg:
       max_turns: 6
       answer_tolerance: 1.0e-6
-      max_number: 50           # 生成题目数值范围
-      num_operands: 3          # calc 题操作数个数
-      code_timeout: 5          # python 工具执行超时（秒）
+      max_number: 50 # 生成题目数值范围
+      num_operands: 3 # calc 题操作数个数
+      code_timeout: 5 # python 工具执行超时（秒）
 
 logger:
   wandb_enabled: false
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
+  num_val_samples_to_print: 3 # 每次验证把 3 条完整对话(含工具调用)打印到作业日志(ray job logs)
   swanlab:
     project: "agent-grpo_qwen3.5-9b_multitool_v1"
     name: "lora-turns6-g8-lr1e4"

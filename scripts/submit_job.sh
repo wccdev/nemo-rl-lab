@@ -42,7 +42,7 @@ env_vars = {
 # *_DATA_DIR 只在你想用「集群上已有的大数据」时才设（值是容器内路径）；
 # 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
 for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
-          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR"):
+          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT"):
     v = os.environ.get(k)
     if v:
         env_vars[k] = v

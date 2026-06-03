@@ -150,32 +150,35 @@ def main():
     if overrides:
         print(f"CLI overrides: {overrides}")
         config = parse_hydra_overrides(config, overrides)
-    config: MasterConfig = OmegaConf.to_container(config, resolve=True)
+    # 新版 NeMo-RL 的 MasterConfig 是 pydantic BaseModel：顶层字段用属性访问（config.policy），
+    # 嵌套仍是普通 dict（config.policy["generation"]）。setup() 要求传入 MasterConfig 实例。
+    config = OmegaConf.to_container(config, resolve=True)
+    config: MasterConfig = MasterConfig(**config)
     print("最终配置：")
     pprint.pprint(config)
 
-    config["logger"]["log_dir"] = get_next_experiment_dir(config["logger"]["log_dir"])
-    print(f"📊 日志目录: {config['logger']['log_dir']}")
+    config.logger["log_dir"] = get_next_experiment_dir(config.logger["log_dir"])
+    print(f"📊 日志目录: {config.logger['log_dir']}")
 
     init_ray()
-    set_seed(config["grpo"]["seed"])
+    set_seed(config.grpo["seed"])
 
-    tokenizer = get_tokenizer(config["policy"]["tokenizer"])
-    config["policy"]["generation"] = configure_generation_config(
-        config["policy"]["generation"], tokenizer
+    tokenizer = get_tokenizer(config.policy["tokenizer"])
+    config.policy["generation"] = configure_generation_config(
+        config.policy["generation"], tokenizer
     )
 
-    env_cfg = config["env"][TASK_NAME]["cfg"]
+    env_cfg = config.env[TASK_NAME]["cfg"]
     env = ToolAgentEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
     task_to_env = {TASK_NAME: env}
 
     ds_length = (
-        config["grpo"]["num_prompts_per_step"]
-        * config["grpo"]["num_generations_per_prompt"]
-        * config["grpo"]["max_num_steps"]
+        config.grpo["num_prompts_per_step"]
+        * config.grpo["num_generations_per_prompt"]
+        * config.grpo["max_num_steps"]
     )
     dataset = IterableToolDataset(tokenizer, env_cfg, ds_length)
-    val_dataset = IterableToolDataset(tokenizer, env_cfg, config["grpo"]["max_val_samples"])
+    val_dataset = IterableToolDataset(tokenizer, env_cfg, config.grpo["max_val_samples"])
 
     (
         policy,

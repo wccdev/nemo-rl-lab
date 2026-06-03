@@ -4,32 +4,32 @@
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-4b.yaml
-  - ../../configs/base/grpo_megatron.yaml      # Megatron-Core 后端 + GB10 调优
-  - ../../configs/base/grpo_lora.yaml          # LoRA（下面覆盖成 4B 配方）
-  - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated：1 卡生成 / 1 卡训练 → PP=1
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优
+  - ../../configs/base/grpo_lora.yaml # LoRA（下面覆盖成 4B 配方）
+  - ../../configs/base/grpo_noncolocated.yaml # 非 colocated：1 卡生成 / 1 卡训练 → PP=1
 
 policy:
-  max_total_sequence_length: 1024              # 4B 实测值
-  train_global_batch_size: 16                  # = num_prompts_per_step * num_generations_per_prompt
+  max_total_sequence_length: 1024 # 4B 实测值
+  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt
   generation_batch_size: 4
   megatron_cfg:
-    peft:                                      # 4B LoRA：秩比 9B 大
+    peft: # 4B LoRA：秩比 9B 大
       dim: 16
       alpha: 32
-    optimizer:                                 # 4B LoRA 学习率比 9B 高
+    optimizer: # 4B LoRA 学习率比 9B 高
       lr: 2.0e-4
       min_lr: 2.0e-5
 
 grpo:
   num_prompts_per_step: 4
   num_generations_per_prompt: 4
-  max_rollout_turns: 1                         # 单轮：答一道题
-  max_num_steps: 1000
+  max_rollout_turns: 1 # 单轮：答一道题
+  max_num_steps: 500
   val_period: 30
   val_at_start: true
   val_at_end: true
   max_val_samples: 256
-  val_batch_size: 64                           # <= max_val_samples
+  val_batch_size: 64 # <= max_val_samples
 
 loss_fn:
   reference_policy_kl_penalty: 0.01
@@ -64,6 +64,7 @@ logger:
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
+  num_val_samples_to_print: 3   # 每次验证把 3 条完整对话(含生成 token)打印到作业日志(ray job logs)
   swanlab:
     project: "grpo_qwen3.5-4b_gsm8k_v1"
     name: "lora-lr2e4-dim16-noncolo"

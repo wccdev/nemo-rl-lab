@@ -108,23 +108,26 @@ def main():
     if overrides:
         print(f"CLI overrides: {overrides}")
         config = parse_hydra_overrides(config, overrides)
-    config: MasterConfig = OmegaConf.to_container(config, resolve=True)
+    # 新版 NeMo-RL 的 MasterConfig 是 pydantic BaseModel：顶层字段用属性访问（config.policy），
+    # 嵌套仍是普通 dict（config.policy["generation"]）。setup() 要求传入 MasterConfig 实例。
+    config = OmegaConf.to_container(config, resolve=True)
+    config: MasterConfig = MasterConfig(**config)
     print("最终配置：")
     pprint.pprint(config)
 
-    config["logger"]["log_dir"] = get_next_experiment_dir(config["logger"]["log_dir"])
-    print(f"📊 日志目录: {config['logger']['log_dir']}")
+    config.logger["log_dir"] = get_next_experiment_dir(config.logger["log_dir"])
+    print(f"📊 日志目录: {config.logger['log_dir']}")
 
     init_ray()
-    set_seed(config["grpo"]["seed"])
+    set_seed(config.grpo["seed"])
 
-    tokenizer = get_tokenizer(config["policy"]["tokenizer"])
-    config["policy"]["generation"] = configure_generation_config(
-        config["policy"]["generation"], tokenizer
+    tokenizer = get_tokenizer(config.policy["tokenizer"])
+    config.policy["generation"] = configure_generation_config(
+        config.policy["generation"], tokenizer
     )
 
     # 数据路径：优先 QA_RL_DATA_DIR，其次 config.data.data_dir
-    data_cfg: dict[str, Any] = config.get("data", {})
+    data_cfg: dict[str, Any] = config.data
     data_dir = os.environ.get("QA_RL_DATA_DIR") or data_cfg.get("data_dir")
     if not data_dir:
         raise SystemExit(
@@ -142,7 +145,7 @@ def main():
     )
     print(f"训练集 {len(train_dataset)} 条，验证集 {len(val_dataset)} 条")
 
-    env_cfg = config["env"][TASK_NAME]["cfg"]
+    env_cfg = config.env[TASK_NAME]["cfg"]
     env = QARewardEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
     task_to_env = {TASK_NAME: env}
 

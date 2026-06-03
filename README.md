@@ -161,9 +161,11 @@ uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
 uv sync --extra submit
 cp cluster/submit.env.example cluster/submit.env   # 填 RAY_DASHBOARD_ADDRESS / NEMO_RL_DIR / 密钥
 
-# C. 每次：在 Mac 上提交、看日志
+# C. 每次：在 Mac 上提交、看/停作业（lab job 自动读 submit.env 的地址）
 uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
-ray job logs -f <job_id> --address http://192.168.1.4:8265
+uv run lab job list                 # 查看作业
+uv run lab job logs <job_id> -f     # 实时日志
+uv run lab job stop <job_id>        # 停止作业
 ```
 
 > 完整步骤、网络/SSH 隧道、上传规则、监控、排错 → **[`docs/remote-submit.md`](docs/remote-submit.md)**。
