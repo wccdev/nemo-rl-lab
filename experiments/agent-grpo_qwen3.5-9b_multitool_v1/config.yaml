@@ -18,16 +18,21 @@ policy:
   # 多轮 + 工具上下文比单轮数学长：seq 给到 2048（实测 9B 单轮用 1250）。
   # 显存吃紧就降到 1536/1024，或减小 num_generations_per_prompt / max_rollout_turns。
   max_total_sequence_length: 2048
-  train_global_batch_size: 32 # = num_prompts_per_step * num_generations_per_prompt
+  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4）
   generation_batch_size: 16
   generation:
     # 多轮：限制每轮生成长度，避免 base 模型早期一轮写满整段预算；给 6 轮留空间、省 KV。
     # 模型学会用 </tool>/</answer> 停下后，实际会更短。
     max_new_tokens: 512
 
+  # ⚠️ 不要在本机型上开 dynamic_batching：2×GB10 统一内存(CPU+GPU 共 ~122GB)对 9B 几乎无余量，
+  #    打包更大的 microbatch（seq=2048 → 预算 2048）会把统一内存顶爆 → 训练步 host RAM OOM。
+  #    （你跑通的 9B 数学能开 dynamic_batching 是因为 seq=1250、预算更小。）
+  #    本实验改用「减少每步样本」来提速（见下方 grpo.num_generations_per_prompt）。
+
 grpo:
   num_prompts_per_step: 4 # GB10 实测小 batch
-  num_generations_per_prompt: 8
+  num_generations_per_prompt: 4 # 8→4 提速：每步样本减半（训练/生成都 ~减半，且省统一内存）；想要更稳的 GRPO 信号再调回 8
   max_rollout_turns: 6 # 多轮：工具调用 + 答题，最多 6 轮
   max_num_steps: 200
   val_period: 50
