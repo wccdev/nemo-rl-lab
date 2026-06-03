@@ -1,0 +1,69 @@
+# 单轮 GRPO：qwen3.5-4b 在 GSM8K 上做数学推理（4B 版，非 colocated 生成）。
+# 来自 2× GB10 实测的 grpo_math_4B_megatron 配方（LoRA dim16 / lr 2e-4），改为非 colocated。
+# 继承：方法基底 + 4B 模型 + Megatron/GB10 + LoRA + 非 colocated。
+defaults:
+  - ../../configs/base/grpo_math_1B.yaml
+  - ../../configs/models/qwen3.5-4b.yaml
+  - ../../configs/base/grpo_megatron.yaml      # Megatron-Core 后端 + GB10 调优
+  - ../../configs/base/grpo_lora.yaml          # LoRA（下面覆盖成 4B 配方）
+  - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated：1 卡生成 / 1 卡训练 → PP=1
+
+policy:
+  max_total_sequence_length: 1024              # 4B 实测值
+  train_global_batch_size: 16                  # = num_prompts_per_step * num_generations_per_prompt
+  generation_batch_size: 4
+  megatron_cfg:
+    peft:                                      # 4B LoRA：秩比 9B 大
+      dim: 16
+      alpha: 32
+    optimizer:                                 # 4B LoRA 学习率比 9B 高
+      lr: 2.0e-4
+      min_lr: 2.0e-5
+
+grpo:
+  num_prompts_per_step: 4
+  num_generations_per_prompt: 4
+  max_rollout_turns: 1                         # 单轮：答一道题
+  max_num_steps: 1000
+  val_period: 30
+  val_at_start: true
+  val_at_end: true
+  max_val_samples: 256
+  val_batch_size: 64                           # <= max_val_samples
+
+loss_fn:
+  reference_policy_kl_penalty: 0.01
+
+# 用 ResponseDataset 接预处理好的 GSM8K jsonl（与 9B 实验共用 datasets/gsm8k）。
+# 先 `lab prepare gsm8k`，再 `export GSM8K_DATA_DIR=<repo>/datasets/gsm8k`。
+data:
+  _override_: true
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  use_multiple_dataloader: false
+  train:
+    data_path: ${oc.env:GSM8K_DATA_DIR}/train.jsonl
+    input_key: question
+    output_key: answer
+  validation:
+    data_path: ${oc.env:GSM8K_DATA_DIR}/val.jsonl
+    input_key: question
+    output_key: answer
+  default:
+    dataset_name: ResponseDataset
+    input_key: question
+    output_key: answer
+    prompt_file: "examples/prompts/cot.txt"
+    system_prompt_file: null
+    processor: "math_hf_data_processor"
+    env_name: "math"
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: false
+  swanlab_enabled: true
+  monitor_gpus: true
+  swanlab:
+    project: "grpo_qwen3.5-4b_gsm8k_v1"
+    name: "lora-lr2e4-dim16-noncolo"

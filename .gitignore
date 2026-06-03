@@ -24,6 +24,9 @@ data/raw/
 *.jsonl.gz
 # 若数据集较小需入库，删除对应忽略行或用 git-lfs
 
+# 题库为公司内部专有数据，整目录不入库（含原始 raw 与处理后的 jsonl）
+datasets/qa_rl/
+
 # 日志（SwanLab 本地缓存 / 其他 tracker）
 swanlog/
 swanlab/

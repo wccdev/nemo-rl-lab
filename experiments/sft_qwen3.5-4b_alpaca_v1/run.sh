@@ -12,6 +12,7 @@ EXP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXP_DIR}/../.." && pwd)"
 CONFIG="${EXP_DIR}/config.yaml"                        # 继承基底 + 本实验差异
 PROFILE_CONF="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/overrides.conf"
+PROFILE_ENV="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/env.sh"
 
 # 训练入口：
 #   - 自定义环境（如多轮 Agent）：本目录有 run.py 则自动用它
@@ -32,6 +33,13 @@ echo "[run] profile : ${CLUSTER_PROFILE}"
 echo "[run] entry   : ${ENTRY}"
 echo "[run] config  : ${CONFIG}"
 echo "[run] cluster/产物 overrides:"; printf '          %s\n' "${OVERRIDES[@]}"
+
+# 本地密钥/HF 配置（容器内直跑用；lab submit 路径由 runtime_env 注入，不依赖此文件）
+SECRETS_ENV="${REPO_ROOT}/cluster/secrets.env"
+[[ -f "${SECRETS_ENV}" ]] && { set -a; source "${SECRETS_ENV}"; set +a; }
+
+# 硬件/网络 env（NCCL、Ray 内存、PyTorch 分配）；多节点须与 ray start 用同一份
+[[ -f "${PROFILE_ENV}" ]] && source "${PROFILE_ENV}"
 
 cd "${NEMO_RL_DIR}"
 exec uv run python "${ENTRY}" --config "${CONFIG}" "${OVERRIDES[@]}"

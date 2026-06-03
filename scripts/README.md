@@ -6,8 +6,8 @@
   ```
 - `submit_job.sh` — 从开发机（Mac）把作业提交到远程 Ray 集群（执行在集群容器内）
   ```bash
-  # 一次性准备
-  pip install "ray[default]"
+  # 一次性准备（Ray CLI 由 uv 管理，版本对齐集群）
+  uv sync --extra submit
   cp cluster/submit.env.example cluster/submit.env   # 填 Ray 地址 / 容器内 NeMo-RL 路径 / 密钥
   # 提交
   bash scripts/submit_job.sh experiments/agent-grpo_qwen3.5-9b_multitool_v1

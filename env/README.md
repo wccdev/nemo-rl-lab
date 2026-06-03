@@ -31,9 +31,17 @@ uv run python examples/run_grpo.py --help
 NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash experiments/<exp>/run.sh
 ```
 
-## 通用 Python 依赖
+## 本机开发期依赖（uv 项目）
 
-`requirements.txt` 只含本仓库脚手架/数据处理用到的轻量依赖；重型框架（NeMo-RL / vLLM / Ray / CUDA）由 NeMo-RL 的 `uv` 环境或官方容器提供。
+本仓库根目录用 **`pyproject.toml` + `uv`** 管理开发期依赖（`typer` + `datasets`），并把统一 CLI 注册为命令入口 `lab`（`[project.scripts] lab = nemo_rl_lab.cli:app`）。重型框架（NeMo-RL / vLLM / Ray / CUDA）不在此管理，由 NeMo-RL 的 `uv` 环境或官方容器提供。
+
+```bash
+uv run lab ls           # 首次会自动 uv sync（建 .venv、装 typer/datasets、editable 安装 lab）
+uv run lab prepare gsm8k
+# 等价：./lab ...（薄 shim）；或 uv sync 后激活 venv 直接用 `lab ...`
+```
+
+> 三种调用方式见根目录 README 的「统一 CLI」一节。`uv run lab` 对任何 clone 仓库的人都开箱即用，无需手动装包。
 
 ## 密钥
 

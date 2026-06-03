@@ -1,4 +1,4 @@
 # 复制为 hosts 并填入真实地址（hosts 已被 .gitignore 排除）
 # 角色   主机名     IP
-head     spark-0    192.168.1.10
-worker   spark-1    192.168.1.11
+head     spark-1    192.168.1.4
+worker   spark-2    192.168.1.5

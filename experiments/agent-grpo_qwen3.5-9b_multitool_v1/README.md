@@ -29,13 +29,19 @@ Agent / 自定义环境 / 多工具链路。
 
 ## 组成
 
-- `config.yaml` — 继承 `grpo_sliding_puzzle.yaml`（多轮基底）+ `qwen3.5-9b`，`_override_` 替换 env。
+- `config.yaml` — 继承 `grpo_sliding_puzzle`（多轮基底）+ `qwen3.5-9b` + `grpo_megatron`(Megatron+GB10) + `grpo_lora`(LoRA)，`_override_` 替换 env。
 - `run.py` — 自定义训练脚本：生成三类任务 + KB，实例化 `ToolAgentEnv`，调 `grpo_train`。
 - `run.sh` — 检测到本目录有 `run.py`，自动以它为入口。
 
+## 关键超参（GB10 实测起点）
+
+- 后端：Megatron-Core + **LoRA**（lr 1e-4/dim8/cosine）。回全参数：删 `defaults` 里 `grpo_lora.yaml`。
+- batch：`num_prompts_per_step=4` / `num_generations_per_prompt=8` / `train_global_batch_size=32` / `micro=1`。
+- **多轮 + 长上下文显存压力最大**：`seq=3072` 起，OOM 就先降到 2048 或减小 `num_generations_per_prompt` / `max_rollout_turns`。
+
 ## SwanLab
 
-- project：`agent-grpo_qwen3.5-9b_multitool_v1`，run：`turns6-g8-kl0.01`，链接：<回填>
+- project：`agent-grpo_qwen3.5-9b_multitool_v1`，run：`lora-turns6-g8-lr1e4`，链接：<回填>
 - 指标：`tool_agent_success_rate`（答对率）/ reward / 平均轮数
 
 ## 运行

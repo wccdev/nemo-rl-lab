@@ -21,17 +21,20 @@
 
 ```
 nemo-rl-lab/
-├── lab                       # 统一 CLI 入口（所有操作的封装）
+├── lab                       # CLI 薄 shim（= uv run lab）
+├── nemo_rl_lab/              # 统一 CLI 实现（Typer；cli.py 为入口）
+├── pyproject.toml            # uv 项目：依赖 + lab 命令入口（[project.scripts]）
+├── uv.lock                   # 锁定版本（uv sync 用）
 ├── README.md                 # 本文件：总览
 ├── .gitignore
 ├── docs/                     # 文档
 │   ├── naming-convention.md  # 命名规范（务必先读）
+│   ├── remote-submit.md      # 从 Mac 提交训练到 Ray 集群（完整操作指南）
 │   ├── setup-dgx-spark-gb10.md
 │   ├── setup-h200.md
 │   └── swanlab.md            # SwanLab 接入说明
-├── env/                      # 环境与依赖
-│   ├── README.md
-│   └── requirements.txt
+├── env/                      # 环境与依赖说明
+│   └── README.md
 ├── cluster/                  # 硬件 / 分布式 profile（与训练解耦）
 │   ├── gb10-spark/           # 2× DGX Spark GB10
 │   └── h200/                 # H200
@@ -83,32 +86,53 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 
 字段间用 `_` 分隔，字段内（如模型名 `qwen3.5-4b`）用 `-`，避免歧义。完整规则见 [`docs/naming-convention.md`](docs/naming-convention.md)。
 
-## 统一 CLI（`./lab`）
+## 统一 CLI（`lab`）
 
-所有操作都通过根目录的 `./lab` 入口（纯标准库，Mac 可直接跑）：
+所有操作都通过 `lab` 入口（[Typer](https://typer.tiangolo.com) 实现，项目正式命令入口）：
 
 ```bash
-./lab ls                                # 列出实验 / 项目
-./lab new grpo_qwen3.5-4b_gsm8k_v1      # 从模板新建实验
-./lab prepare gsm8k                     # 预处理数据集（gsm8k / alpaca）
-./lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（执行在集群）
-./lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   # 在集群容器内直接跑
-./lab ray head                          # 启动 Ray head（在 head 节点容器内）
-./lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底配置
+uv run lab ls                                # 列出实验 / 项目
+uv run lab new grpo_qwen3.5-4b_gsm8k_v1      # 从模板新建实验
+uv run lab prepare gsm8k                     # 预处理数据集（gsm8k / alpaca / qa_rl）
+uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（执行在集群）
+uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   # 在集群容器内直接跑
+uv run lab ray head                          # 启动 Ray head（在 head 节点容器内）
+uv run lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底配置
 ```
 
-`./lab <子命令> --help` 看每个命令的参数。CLI 只是对 `scripts/` 与各实验脚本的封装，单一事实来源。
+三种等价调用方式：
+
+| 方式 | 说明 |
+| --- | --- |
+| `uv run lab ...` | 推荐；uv 自动同步项目环境再运行，对任何人都生效（无需手动装包） |
+| `./lab ...` | 仓库根的薄 shim，内部就是 `uv run lab`，可在任意目录用绝对路径调用 |
+| `lab ...` | `uv sync` 后 `.venv/bin/lab` 已生成；激活 venv 即可直接用 |
+
+`uv run lab <子命令> --help` 看每个命令的参数。CLI 只是对 `scripts/` 与各实验脚本的封装，单一事实来源。
+实现见 `nemo_rl_lab/cli.py`。
+
+### 终端补全（Tab）
+
+子命令、实验名、数据集、profile 都能补全（bash / zsh / fish / powershell）。安装一次即可：
+
+```bash
+uv run lab --install-completion      # 安装到当前 shell，重开终端生效
+uv run lab --show-completion         # 只打印脚本，自行决定放哪
+```
+
+之后 `lab sub<Tab>` → `submit`，`lab submit <Tab>` 列出实验名，`lab submit --profile <Tab>` 列出 profile。
+（补全基于 `lab` 命令名；建议 `uv sync` 后用激活的 venv，或把 `.venv/bin` 加进 PATH。）
 
 ## 新建一个实验（细节）
 
 ```bash
-./lab new grpo_qwen3.5-4b_gsm8k_v1      # 或 bash scripts/new_experiment.sh experiments <name>
+uv run lab new grpo_qwen3.5-4b_gsm8k_v1   # 或 bash scripts/new_experiment.sh experiments <name>
 cd experiments/grpo_qwen3.5-4b_gsm8k_v1
 # 1. 改 README.md：目标 / 基础模型 / 数据集 / SwanLab 项目名
 # 2. 改 config.yaml：选 defaults（基底 + 模型片段），写本实验差异（lr/kl/数据集/swanlab）
 # 3. 若是 SFT/Agent，在 run.sh 顶部把 ENTRY 改成对应入口（见 configs/README.md）
 # 4. 提交到集群（推荐）或在集群容器内直接跑：
-./lab submit grpo_qwen3.5-4b_gsm8k_v1
+uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
 ```
 
 ## 示例实验（覆盖三种方法）
@@ -116,14 +140,38 @@ cd experiments/grpo_qwen3.5-4b_gsm8k_v1
 | 实验 | 方法 | 说明 |
 | --- | --- | --- |
 | [`experiments/sft_qwen3.5-4b_alpaca_v1`](experiments/sft_qwen3.5-4b_alpaca_v1) | SFT | Alpaca 指令监督微调（本地 jsonl + ResponseDataset） |
+| [`experiments/grpo_qwen3.5-4b_gsm8k_v1`](experiments/grpo_qwen3.5-4b_gsm8k_v1) | GRPO（单轮） | GSM8K 数学推理（4B + LoRA dim16/lr2e-4，非 colocated） |
 | [`experiments/grpo_qwen3.5-9b_gsm8k_v1`](experiments/grpo_qwen3.5-9b_gsm8k_v1) | GRPO（单轮） | GSM8K 数学推理，math 环境验证 |
+| [`experiments/grpo_qwen3.5-9b_qa-rl_v1`](experiments/grpo_qwen3.5-9b_qa-rl_v1) | GRPO（单轮，自定义判分） | 自有技术培训考题；客观题规则判分 + 简答 LLM 裁判 |
 | [`experiments/agent-grpo_qwen3.5-9b_multitool_v1`](experiments/agent-grpo_qwen3.5-9b_multitool_v1) | GRPO（多轮 Agent） | 多工具（检索/计算/代码）调用，自定义环境 |
 
-数据预处理脚本见 `common/data/`（gsm8k / alpaca）。自定义环境见 `common/environments/`。
+数据预处理脚本见 `common/data/`（gsm8k / alpaca / qa_rl）。自定义环境见 `common/environments/`，判分逻辑见 `common/rewards/`。
+
+## 训练工作流（Mac → 集群）
+
+**在 Mac 上写代码 + 提交，训练跑在 Spark GB10 容器里**，日常提交不进容器、不需要 GPU、代码随作业自动上传。
+底层是 Ray 官方的 Job Submission（`ray job submit` → head dashboard:8265）。
+
+```bash
+# A. 一次性：在两台容器里把 Ray 集群组好（之后反复提交都不用再做；也可从 Mac 用 ssh 远程触发）
+#    node1 容器: bash cluster/gb10-spark/start_ray_head.sh
+#    node2 容器: bash cluster/gb10-spark/start_ray_worker.sh
+
+# B. 一次性：Mac 端装 Ray CLI（uv 管理，版本对齐集群）+ 填提交配置
+uv sync --extra submit
+cp cluster/submit.env.example cluster/submit.env   # 填 RAY_DASHBOARD_ADDRESS / NEMO_RL_DIR / 密钥
+
+# C. 每次：在 Mac 上提交、看日志
+uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
+ray job logs -f <job_id> --address http://192.168.1.4:8265
+```
+
+> 完整步骤、网络/SSH 隧道、上传规则、监控、排错 → **[`docs/remote-submit.md`](docs/remote-submit.md)**。
 
 ## 快速开始
 
 1. 装 NeMo-RL 0.6.0 与依赖：[`env/README.md`](env/README.md)
 2. 配置 SwanLab：[`docs/swanlab.md`](docs/swanlab.md)
 3. 集群 / 硬件 profile：[`cluster/README.md`](cluster/README.md)、[`docs/setup-dgx-spark-gb10.md`](docs/setup-dgx-spark-gb10.md)
-4. 命名规范：[`docs/naming-convention.md`](docs/naming-convention.md)
+4. **从 Mac 提交到集群**：[`docs/remote-submit.md`](docs/remote-submit.md)
+5. 命名规范：[`docs/naming-convention.md`](docs/naming-convention.md)

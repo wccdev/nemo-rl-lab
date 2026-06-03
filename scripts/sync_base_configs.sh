@@ -10,6 +10,7 @@ DST="${REPO_ROOT}/configs/base"
 
 FILES=(grpo_math_1B.yaml sft.yaml grpo_sliding_puzzle.yaml)
 # 需要更大模型基底时，把对应文件名加进来，例如 grpo_math_8B.yaml
+# 注意：configs/base/grpo_megatron.yaml 是本仓库自定义 overlay（非官方副本），不在此同步、勿加入。
 
 mkdir -p "${DST}"
 for f in "${FILES[@]}"; do

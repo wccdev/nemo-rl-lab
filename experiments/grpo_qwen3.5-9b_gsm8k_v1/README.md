@@ -20,13 +20,19 @@ export GSM8K_DATA_DIR="$(pwd)/datasets/gsm8k"  # 供 config.yaml 的 ${oc.env:GS
 
 ## 组成
 
-- `config.yaml` — 继承 `configs/base/grpo_math_1B.yaml` + `qwen3.5-9b`，`_override_` 替换 `data`
-  为 `ResponseDataset` 指向上面的 jsonl，处理器 `math_hf_data_processor`、环境 `math`。
+- `config.yaml` — 继承 `grpo_math_1B` + `qwen3.5-9b` + `grpo_megatron`(Megatron+GB10 调优) + `grpo_lora`(LoRA)，
+  `_override_` 替换 `data` 为 `ResponseDataset` 指向上面的 jsonl，处理器 `math_hf_data_processor`、环境 `math`。
 - `run.sh` — 无自定义 `run.py`，自动用官方入口 `examples/run_grpo.py`。
+
+## 关键超参（GB10 实测起点）
+
+- 后端：Megatron-Core + **LoRA**（dim8/alpha16，lr 1e-4，wd 0，cosine）。回全参数：删 `defaults` 里 `grpo_lora.yaml`。
+- batch：`num_prompts_per_step=4`、`num_generations_per_prompt=8`、`train_global_batch_size=32`、`micro=1`、`seq=1250`。
+- 显存紧：降 `max_total_sequence_length`、`gpu_memory_utilization`，或减 `num_generations_per_prompt`（注意 global 要整除 prompts×gen）。
 
 ## SwanLab
 
-- project：`grpo_qwen3.5-9b_gsm8k_v1`，run：`lr1e6-g16-kl0.01`，链接：<回填>
+- project：`grpo_qwen3.5-9b_gsm8k_v1`，run：`lora-lr1e4-g8-kl0.01`，链接：<回填>
 
 ## 运行
 

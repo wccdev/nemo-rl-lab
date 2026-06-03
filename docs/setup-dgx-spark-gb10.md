@@ -68,8 +68,8 @@ NEMO_RL_DIR=/opt/NeMo-RL CLUSTER_PROFILE=gb10-spark bash experiments/<exp>/run.s
 **方式 B：从 Mac 一键提交（推荐，执行仍在集群）**
 
 ```bash
-# 一次性：开发机装 Ray CLI + 配好集群地址
-pip install "ray[default]"
+# 一次性：开发机装 Ray CLI（uv 管理，版本对齐集群）+ 配好集群地址
+uv sync --extra submit
 cp cluster/submit.env.example cluster/submit.env   # 填 RAY_DASHBOARD_ADDRESS / NEMO_RL_DIR / SWANLAB_API_KEY
 # 提交（代码自动上传，无需手动在 Spark git pull）
 bash scripts/submit_job.sh experiments/<exp> [gb10-spark]
@@ -78,6 +78,10 @@ bash scripts/submit_job.sh experiments/<exp> [gb10-spark]
 ## 4. 资源与并行度建议
 
 - GB10 为统一内存架构，单卡可用显存较大但带宽 / 算力与数据中心卡不同，**batch size、序列长度需实测**。
-- 2 节点优先用数据并行（DTensor/FSDP 在 `num_nodes*gpus_per_node` 张卡上分片）；跨节点张量并行（TP）通常不划算，保持 `policy.dtensor_cfg.tensor_parallel_size=1`。
-- GRPO 的 rollout（vLLM 生成）开销大：默认 `colocated.enabled=true` 与训练共用 GPU；资源紧张可在 `overrides.conf` 调整。
-- 这些都写在 `cluster/gb10-spark/overrides.conf`，按实测调整。
+- **训练后端 + LoRA**：本仓库 GRPO 实验默认 **Megatron-Core + LoRA**，由两个 overlay 叠加（来自 2× GB10 实测）：
+  - `configs/base/grpo_megatron.yaml`：Megatron 后端 + GB10 显存项（`activation_checkpointing`、`empty_unused_memory_level=2`、`apply_rope_fusion=false`、`defer_fp32_logits`、`enforce_eager`、关 sequence packing、micro batch=1 等）。
+  - `configs/base/grpo_lora.yaml`：LoRA（lr 1e-4 / wd 0 / cosine）。9B 全参数在 2× GB10 上基本放不下，**LoRA 是能跑起来的关键**。
+  - 回全参数：删 `grpo_lora.yaml`；回 DTensor：删 `grpo_megatron.yaml`（见 `configs/README.md`）。
+- **batch**：实测 `num_prompts_per_step=4`、`num_generations_per_prompt=8`、`train_global_batch_size=32`（须整除 prompts×gen）、`train_micro_batch_size=1`、序列 1250 起。
+- 2 节点优先用数据并行；跨节点 TP 不划算，保持 TP=1。**PP：9B 实测 PP=1（可配非 colocated 生成），4B 实测 PP=2**——并行度在 `cluster/gb10-spark/overrides.conf`。
+- 显存/生成类调优放在 overlay（merge）而非 `overrides.conf`：后者是 CLI struct 模式且对 SFT 也生效，SFT 没有 `policy.generation` 会报错。
