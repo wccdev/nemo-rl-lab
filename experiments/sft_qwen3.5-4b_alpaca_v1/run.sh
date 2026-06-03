@@ -41,5 +41,22 @@ SECRETS_ENV="${REPO_ROOT}/cluster/secrets.env"
 # 硬件/网络 env（NCCL、Ray 内存、PyTorch 分配）；多节点须与 ray start 用同一份
 [[ -f "${PROFILE_ENV}" ]] && source "${PROFILE_ENV}"
 
+# 数据目录：未显式设置 *_DATA_DIR 时，默认指向本仓库 datasets/<name>。
+# lab submit 时该目录随作业上传（submit_job.sh 仅排除 raw/data 缓存），
+# 故 config 里的 ${oc.env:ALPACA_DATA_DIR} 等无需手填即可解析；
+# 想用集群上已有的大数据，则在 submit.env / secrets.env 显式设置同名变量覆盖。
+for _ds in gsm8k:GSM8K_DATA_DIR alpaca:ALPACA_DATA_DIR qa_rl:QA_RL_DATA_DIR; do
+  _name="${_ds%%:*}"; _var="${_ds##*:}"
+  if [[ -z "${!_var:-}" && -d "${REPO_ROOT}/datasets/${_name}" ]]; then
+    export "${_var}=${REPO_ROOT}/datasets/${_name}"
+    echo "[run] ${_var}=${REPO_ROOT}/datasets/${_name} (默认指向仓库内数据)"
+  fi
+done
+
+# 经 ray job submit 时，作业自带 runtime_env（working_dir + 转发的 env_vars）；NeMo-RL 的
+# init_ray 还会再 ray.init(runtime_env=...) 传一份 env_vars，键重叠会被 Ray 判为冲突报错。
+# 置 1 让 Ray 合并 Job 与 Driver 的 runtime_env（冲突以 Driver 为准，值相同无副作用；直跑无害）。
+export RAY_OVERRIDE_JOB_RUNTIME_ENV=1
+
 cd "${NEMO_RL_DIR}"
 exec uv run python "${ENTRY}" --config "${CONFIG}" "${OVERRIDES[@]}"

@@ -35,7 +35,7 @@ loss_fn:
   reference_policy_kl_penalty: 0.01
 
 # 用 ResponseDataset 接预处理好的 GSM8K jsonl（与 9B 实验共用 datasets/gsm8k）。
-# 先 `lab prepare gsm8k`，再 `export GSM8K_DATA_DIR=<repo>/datasets/gsm8k`。
+# 先 `lab prepare gsm8k`；GSM8K_DATA_DIR 由 run.sh 自动指向仓库内 datasets/gsm8k（提交时随作业上传），无需手填。
 data:
   _override_: true
   max_input_seq_length: ${policy.max_total_sequence_length}

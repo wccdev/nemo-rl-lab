@@ -12,6 +12,12 @@
   # 提交
   bash scripts/submit_job.sh experiments/agent-grpo_qwen3.5-9b_multitool_v1
   ```
+- `prefetch_hf_model.sh` — **在集群容器内**预下载 HF 模型到 `HF_HOME`（避免训练时连不上 hf-mirror.com）
+  ```bash
+  # 在 Spark 容器里（与 submit.env 同目录约定）
+  source cluster/submit.env
+  bash scripts/prefetch_hf_model.sh Qwen/Qwen3.5-4B
+  ```
 - `sync_base_configs.sh` — 升级 NeMo-RL 版本时同步官方基底配置到 `configs/base/`
 
 后续可加：批量评测、checkpoint 导出（转 HF）等。

@@ -61,9 +61,11 @@ loss_fn:
   # Async GRPO requires importance sampling correction enabled
   # Set to true when async_grpo.enabled is true
   use_importance_sampling_correction: false
+  # 新版 NeMo-RL：type 非 null 即视为开启 TIS，须同时 use_importance_sampling_correction=true。
+  # 关 TIS 时 type/ratio 都应为 null（勿写 type: tis + ratio: null，0.6.0 旧版会静默忽略 type）。
+  truncated_importance_sampling_type: null
   truncated_importance_sampling_ratio: null
-  truncated_importance_sampling_ratio_min: null  # Lower bound for ICE-POP
-  truncated_importance_sampling_type: tis  # "tis" (clamp to max) or "icepop" (filter outside [min, max])
+  truncated_importance_sampling_ratio_min: null  # Lower bound for ICE-POP / seq-mask-tis
   sequence_level_importance_ratios: false
   token_level_loss: true
   force_on_policy_ratio: false  # Set to true to force ratio=1.0 (requires train_global_batch_size == num_prompts_per_step * num_generations_per_prompt)

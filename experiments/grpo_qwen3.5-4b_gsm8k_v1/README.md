@@ -19,8 +19,10 @@
 
 ```bash
 lab prepare gsm8k                              # 写到 datasets/gsm8k/{train,val}.jsonl
-export GSM8K_DATA_DIR="$(pwd)/datasets/gsm8k"  # 供 config 的 ${oc.env:GSM8K_DATA_DIR} 解析
 ```
+
+数据随作业上传，`run.sh` 会自动把 `GSM8K_DATA_DIR` 指向它，**提交时无需手动 export**
+（想用别处数据再 `export GSM8K_DATA_DIR=/abs/dir` 覆盖）。
 
 ## 组成
 

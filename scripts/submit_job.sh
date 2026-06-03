@@ -38,15 +38,20 @@ env_vars = {
     "NEMO_RL_DIR": os.environ["NEMO_RL_DIR"],
     "CLUSTER_PROFILE": os.environ["CLUSTER_PROFILE"],
 }
-# 可选转发：密钥 + HF 下载配置（在 submit.env 里设了才转发）
-for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME"):
+# 可选转发：密钥 + HF 下载配置 + 数据目录覆盖（在 submit.env 里设了才转发）。
+# *_DATA_DIR 只在你想用「集群上已有的大数据」时才设（值是容器内路径）；
+# 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
+for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
+          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR"):
     v = os.environ.get(k)
     if v:
         env_vars[k] = v
 print(json.dumps({
-    # 不上传：大文件、密钥文件、git/缓存
+    # 上传整个仓库（含已准备好的小 jsonl，自定义环境/数据随作业分发到各节点）；
+    # 仅排除：原始/中间缓存、产物、密钥、git/pycache。
     "excludes": [
-        "datasets/**", "**/outputs/**", ".git/**", "**/__pycache__/**",
+        "datasets/**/raw/**", "datasets/**/data/**",
+        "**/outputs/**", ".git/**", "**/__pycache__/**",
         "cluster/submit.env", "cluster/secrets.env", "**/*.key",
     ],
     "env_vars": env_vars,
@@ -57,6 +62,14 @@ PY
 echo "[submit] 集群        : ${RAY_DASHBOARD_ADDRESS}"
 echo "[submit] 实验        : ${EXP_REL}  (profile=${CLUSTER_PROFILE})"
 echo "[submit] NEMO_RL_DIR : ${NEMO_RL_DIR} (容器内)"
+if [[ -n "${HF_ENDPOINT:-}" ]]; then
+  echo "[submit] 警告: 已设置 HF_ENDPOINT=${HF_ENDPOINT}"
+  echo "         集群容器常连不上国内镜像；若训练报 OSError 连不上 mirror，请注释 submit.env 里的 HF_ENDPOINT，"
+  echo "         并在容器内先运行: bash scripts/prefetch_hf_model.sh <模型名>"
+fi
+if [[ -n "${HF_HOME:-}" ]]; then
+  echo "[submit] HF_HOME     : ${HF_HOME} (容器内，模型须已缓存或能访问 huggingface.co)"
+fi
 
 cd "${REPO_ROOT}"
 # 用 uv 管理的 Ray CLI（pyproject 可选依赖 submit；版本对齐集群）。
