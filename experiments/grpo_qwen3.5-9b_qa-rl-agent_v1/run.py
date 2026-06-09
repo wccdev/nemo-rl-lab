@@ -1,0 +1,203 @@
+#!/usr/bin/env python
+# 题库「多轮 + 知识库检索」Agent GRPO 训练脚本（NeMo-RL 0.6.0）。
+#
+# 这是与单轮 baseline（grpo_qwen3.5-9b_qa-rl_v1）做 A/B 对比的【对照组 / treatment】：
+#   同一份题库数据 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是——
+#   模型回答前可以**多轮调用 <search> 检索外部知识库**再作答（见 common/environments/qa_kb_agent_env.py）。
+#
+# 数据：datasets/qa_rl 的 train/val jsonl（每行 {"query", "expected_answer": "[type] ..."}），与 baseline 完全一致；
+#       本脚本只在 query 前**加一段"可检索知识库"的说明**，答案格式仍沿用题目里的 \boxed{}。
+import argparse
+import json
+import os
+import pprint
+import sys
+from typing import Any
+
+from omegaconf import OmegaConf
+from torch.utils.data import Dataset
+
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from nemo_rl.algorithms.grpo import MasterConfig, grpo_train, setup
+from nemo_rl.algorithms.utils import get_tokenizer, set_seed
+from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType
+from nemo_rl.distributed.virtual_cluster import init_ray
+from nemo_rl.models.generation import configure_generation_config
+from nemo_rl.utils.config import (
+    load_config,
+    parse_hydra_overrides,
+    register_omegaconf_resolvers,
+)
+from nemo_rl.utils.logger import get_next_experiment_dir
+
+from common.environments.qa_kb_agent_env import QAKBAgentEnv
+
+TASK_NAME = "qa_kb"
+STOP_STRINGS = ["</search>"]  # 生成到 </search> 即停，让环境返回检索结果；直接作答则生成到 EOS
+
+# 在原题面前加这段说明，告诉模型「可多轮检索知识库」；答案格式仍由题目自带的 \boxed{} 指令决定。
+KB_PREAMBLE = (
+    "你可以在回答前多轮检索公司知识库来获取依据：\n"
+    "需要检索时，输出 <search>查询词</search>，系统会返回相关资料；可多次检索。\n"
+    "拿到资料后，按题目要求作答（答案格式见题目）。资料不足或无需检索也可直接作答。\n\n"
+)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="题库多轮+知识库检索 GRPO 训练")
+    parser.add_argument("--config", type=str, default=None, help="YAML 配置路径")
+    args, overrides = parser.parse_known_args()
+    return args, overrides
+
+
+def _read_jsonl(path: str) -> list[dict]:
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+class QAKBJsonlDataset(Dataset):
+    """读题库 jsonl，转成多轮 KB Agent 的 DatumSpec（query 前加检索说明）。"""
+
+    def __init__(self, path: str, tokenizer, input_key: str, output_key: str,
+                 max_turns: int, system_prompt: str | None = None):
+        self.rows = _read_jsonl(path)
+        self.tokenizer = tokenizer
+        self.input_key = input_key
+        self.output_key = output_key
+        self.max_turns = int(max_turns)
+        self.system_prompt = system_prompt
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, idx: int) -> DatumSpec:
+        row = self.rows[idx]
+        query = str(row[self.input_key])
+        expected = str(row[self.output_key])
+
+        chat: list[dict[str, str]] = []
+        if self.system_prompt:
+            chat.append({"role": "system", "content": self.system_prompt})
+        chat.append({"role": "user", "content": KB_PREAMBLE + query})
+
+        prompt_text = self.tokenizer.apply_chat_template(
+            chat, tokenize=False, add_generation_prompt=True, add_special_tokens=False
+        ).strip()
+        token_ids = self.tokenizer(
+            prompt_text, return_tensors="pt", add_special_tokens=False
+        )["input_ids"][0]
+
+        message_log: LLMMessageLogType = [
+            {"role": "user", "content": prompt_text, "token_ids": token_ids}
+        ]
+        return {
+            "message_log": message_log,
+            "length": len(token_ids),
+            "extra_env_info": {
+                "expected_answer": expected,
+                "query": query,           # 用原题面（不含检索说明）给裁判判分
+                "num_turns": 0,
+                "max_turns": self.max_turns,
+            },
+            "loss_multiplier": 1.0,
+            "idx": idx,
+            "task_name": TASK_NAME,
+            "stop_strings": STOP_STRINGS,
+        }
+
+
+def main():
+    register_omegaconf_resolvers()
+    args, overrides = parse_args()
+    if not args.config:
+        args.config = os.path.join(THIS_DIR, "config.yaml")
+
+    config = load_config(args.config)
+    print(f"已加载配置: {args.config}")
+    if overrides:
+        print(f"CLI overrides: {overrides}")
+        config = parse_hydra_overrides(config, overrides)
+    # MasterConfig 是 pydantic BaseModel：顶层属性访问，嵌套仍是 dict。
+    config = OmegaConf.to_container(config, resolve=True)
+    config: MasterConfig = MasterConfig(**config)
+    print("最终配置：")
+    pprint.pprint(config)
+
+    config.logger["log_dir"] = get_next_experiment_dir(config.logger["log_dir"])
+    print(f"📊 日志目录: {config.logger['log_dir']}")
+
+    init_ray()
+    set_seed(config.grpo["seed"])
+
+    tokenizer = get_tokenizer(config.policy["tokenizer"])
+    config.policy["generation"] = configure_generation_config(
+        config.policy["generation"], tokenizer
+    )
+
+    # 数据路径：优先 QA_RL_DATA_DIR，其次 config.data.data_dir
+    data_cfg: dict[str, Any] = config.data
+    data_dir = os.environ.get("QA_RL_DATA_DIR") or data_cfg.get("data_dir")
+    if not data_dir:
+        raise SystemExit(
+            "未指定数据目录。请先把题库放到集群并 `export QA_RL_DATA_DIR=<cluster>/datasets/qa_rl`。"
+        )
+    input_key = data_cfg.get("input_key", "query")
+    output_key = data_cfg.get("output_key", "expected_answer")
+    system_prompt = data_cfg.get("system_prompt") or None
+
+    env_cfg = config.env[TASK_NAME]["cfg"]
+    max_turns = int(env_cfg.get("max_turns", config.grpo["max_rollout_turns"]))
+
+    train_dataset = QAKBJsonlDataset(
+        os.path.join(data_dir, "train.jsonl"), tokenizer, input_key, output_key,
+        max_turns, system_prompt,
+    )
+    val_dataset = QAKBJsonlDataset(
+        os.path.join(data_dir, "val.jsonl"), tokenizer, input_key, output_key,
+        max_turns, system_prompt,
+    )
+    print(f"训练集 {len(train_dataset)} 条，验证集 {len(val_dataset)} 条（每条可多轮检索，max_turns={max_turns}）")
+
+    env = QAKBAgentEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
+    task_to_env = {TASK_NAME: env}
+
+    (
+        policy,
+        policy_generation,
+        cluster,
+        dataloader,
+        val_dataloader,
+        loss_fn,
+        logger,
+        checkpointer,
+        grpo_state,
+        master_config,
+    ) = setup(config, tokenizer, train_dataset, val_dataset)
+
+    grpo_train(
+        policy,
+        policy_generation,
+        dataloader,
+        val_dataloader,
+        tokenizer,
+        loss_fn,
+        task_to_env,
+        task_to_env,
+        logger,
+        checkpointer,
+        grpo_state,
+        master_config,
+    )
+
+
+if __name__ == "__main__":
+    main()

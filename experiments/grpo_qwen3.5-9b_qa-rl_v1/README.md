@@ -1,6 +1,11 @@
-# grpo_qwen3.5-9b_qa-rl_v1
+# grpo_qwen3.5-9b_qa-rl_v1（对比实验 · 实验一 / baseline）
 
 用 **GRPO** 在自有**技术培训考题题库**上强化训练 **Qwen 3.5 9B**。单轮：模型答一道题，环境判分即结束。
+
+> **这是 A/B 对比的基线组**：单轮、**无工具**。
+> 对照组（实验二 / treatment）= [`grpo_qwen3.5-9b_qa-rl-agent_v1`](../grpo_qwen3.5-9b_qa-rl-agent_v1)：**多轮 + 知识库检索工具**。
+> 两个实验共用同一数据集 / 模型 / LoRA / batch / seq / 裁判奖励，**唯一变量**是「能否多轮调用知识库工具回答」。
+> 先跑本实验拿到 baseline 曲线，知识库就绪后再跑实验二对比。
 
 ## 目标
 
@@ -18,24 +23,39 @@
 
 数据答案格式（`expected_answer` 带 `[type]` 前缀）见 `common/rewards/README.md`。
 
-## 跑起来
+## 跑起来（从 Mac `lab submit` 到集群）
+
+**前置 1 · 题库数据要在集群上。** `datasets/qa_rl/` 被 `.gitignore`（公司题库），Ray 上传 working_dir 尊重 .gitignore → **不会自动上传**。先把题库放到集群，并在 `cluster/submit.env` 设 `QA_RL_DATA_DIR` 指过去：
 
 ```bash
-# 1) 预处理数据（把 raw/ 的 train/val/shortanswer 整理进 datasets/qa_rl/）
+# 在 Mac 上：先本地预处理（若 datasets/qa_rl 还没 train/val.jsonl）
 lab prepare qa_rl
-export QA_RL_DATA_DIR="$(pwd)/datasets/qa_rl"
-
-# 2)（可选）简答裁判：在集群起一个本地 vLLM 裁判端点，并设环境变量
-#    vllm serve Qwen/Qwen2.5-7B-Instruct --port 8001
-#    export JUDGE_BASE_URL=http://127.0.0.1:8001/v1 JUDGE_MODEL=Qwen/Qwen2.5-7B-Instruct JUDGE_API_KEY=EMPTY
-#    不配也能跑：简答会回退到关键词覆盖率（config 里 env.qa.cfg.use_judge 控制是否启用裁判）
-
-# 3) 提交到集群（推荐）或在集群容器内直接跑
-lab submit grpo_qwen3.5-9b_qa-rl_v1
-#   或： NEMO_RL_DIR=/opt/NeMo-RL CLUSTER_PROFILE=gb10-spark lab run grpo_qwen3.5-9b_qa-rl_v1
+# 再 scp 到集群（路径与 submit.env 的 QA_RL_DATA_DIR 一致）
+ssh aidenlu@192.168.1.4 'mkdir -p ~/nemo-rl-work/datasets/qa_rl'
+scp datasets/qa_rl/*.jsonl aidenlu@192.168.1.4:~/nemo-rl-work/datasets/qa_rl/
 ```
 
-> 注意：环境（Ray actor）需要能 `import common.*`，所以要让本仓库根目录在集群作业的工作目录/PYTHONPATH 里（`lab submit` 的 `ray job submit --working-dir` 会带上仓库代码）。
+**前置 2 · 简答裁判 LLM（已在 `cluster/submit.env` 配好你的自建端点）。** 关键变量（`lab submit` 会转发到集群作业）：
+
+```bash
+JUDGE_BASE_URL=http://172.30.93.180:1234/v1   # 你的自建 OpenAI 兼容端点
+JUDGE_MODEL=local-model                        # ⚠️ 填端点真实模型 id（见下）
+JUDGE_API_KEY=asd
+```
+
+> ⚠️ `JUDGE_MODEL` 要填对：在**集群容器**里 `curl -H "Authorization: Bearer asd" http://172.30.93.180:1234/v1/models` 看 `data[].id`，填回 `submit.env`。
+> 填错或端点连不上不会让训练崩——简答会自动**回退到关键词覆盖率**（只是判分变糙）。
+> 不想用裁判：把 `config.yaml` 的 `env.qa.cfg.use_judge` 设 `false`，全部走规则判分、零成本。
+
+**提交：**
+
+```bash
+lab submit grpo_qwen3.5-9b_qa-rl_v1
+#   或在集群容器内直跑： NEMO_RL_DIR=/home/aidenlu/nemo-rl-work/nemo-rl lab run grpo_qwen3.5-9b_qa-rl_v1
+#   （直跑时把 JUDGE_*/QA_RL_DATA_DIR 放 cluster/secrets.env，run.sh 会自动 source）
+```
+
+> 注意：环境（Ray actor）需要能 `import common.*`，本仓库根目录会随 `ray job submit --working-dir` 上传到集群作业工作目录。
 
 ## 关键超参 / 调参入口（`config.yaml`）
 

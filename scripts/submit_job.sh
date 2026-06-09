@@ -42,7 +42,13 @@ env_vars = {
 # *_DATA_DIR 只在你想用「集群上已有的大数据」时才设（值是容器内路径）；
 # 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
 for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
-          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT"):
+          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT",
+          # UV_NO_SYNC=1：让集群 run.sh 的 `uv run` 跳过 sync、直接用已装好的 venv，
+          # 避开 GitHub 直链依赖(flash-attn)偶发 504 拖垮整个作业（venv 已建好时强烈建议设 1）。
+          "UV_NO_SYNC",
+          # 简答题裁判 LLM（qa-rl / qa-rl-agent）；外部知识库检索（qa-rl-agent）。
+          "JUDGE_BASE_URL", "JUDGE_MODEL", "JUDGE_API_KEY", "JUDGE_CONCURRENCY", "JUDGE_TIMEOUT",
+          "KB_BASE_URL", "KB_API_KEY", "KB_TOP_K", "KB_TIMEOUT"):
     v = os.environ.get(k)
     if v:
         env_vars[k] = v

@@ -2,6 +2,10 @@
 # 继承官方单轮基底 grpo_math_1B + qwen3.5-9b 片段，只写差异。
 # 奖励是自定义环境 QARewardEnv（common/environments/qa_env.py），由本目录 run.py 实例化
 # （task_name=qa，读取 env.qa.cfg）。数据走 run.py 自建 Dataset，不用 ResponseDataset。
+#
+# ★ 对比实验【实验一 / baseline】：单轮、无工具——模型直接答题，环境判分即结束。
+#   对照组【实验二 / treatment】= grpo_qwen3.5-9b_qa-rl-agent_v1（多轮 + 知识库检索工具）。
+#   两者共用同一数据集 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是「能否多轮调用知识库工具」。
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-9b.yaml
@@ -10,15 +14,30 @@ defaults:
   - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 policy:
-  max_total_sequence_length: 1536      # 多选题带选项较长（比数学题略大）；显存紧就降
-  train_global_batch_size: 32          # = num_prompts_per_step * num_generations_per_prompt
-  generation_batch_size: 16
+  # 用已完整缓存的 base 模型（与 agent 实验一致；instruct 版集群没下全会卡在下载）。
+  # ⚠️ 对比实验二必须用同一个模型，改这里也要同步改 qa-rl-agent_v1。
+  model_name: "Qwen/Qwen3.5-9B-Base"
+  tokenizer:
+    name: "Qwen/Qwen3.5-9B-Base"
+  max_total_sequence_length: 1536      # 多选题带选项较长（比数学题略大）；seq 不要再降（降会截断答案，踩过坑）
+  # ⚠️ GB10 统一内存：g=8/gbs=32 时 1536 长度的啰嗦生成内存逐步爬高，step 32 被 Ray OOM 杀掉。
+  #    每步样本数减半（g 8→4、gbs 32→16、gen_bs 16→8）压住内存峰值，reward 信号略噪但仍稳步上升。
+  train_global_batch_size: 16          # = num_prompts_per_step * num_generations_per_prompt（4×4）
+  generation_batch_size: 8
+  generation:
+    # ⚠️ 踩坑记录（别再动这两个值）：
+    #   1) 砍到 768 提速 → Base 推理还没写到 \boxed 就被截断 → step0 基线 0.50→0.20，废。
+    #   2) 加 stop_strings:["</think>"] 想省 token → Qwen 推理模板把 \boxed{} 放在 </think> *之后*，
+    #      在 </think> 停正好切掉答案 → step0 0.50→0.18，更废。
+    #   实测：纯 1536、不加 stop 时 step0=0.50、step1 reward≈0.84（最佳，就用这个）。
+    #   Base 爱啰嗦导致单步 ~11 分钟是已知代价；靠 RL 逐步教会简洁后会自然变快，不要再用截断/stop 硬压。
+    max_new_tokens: 1536
 
 grpo:
   num_prompts_per_step: 4              # GB10 实测小 batch
-  num_generations_per_prompt: 8
+  num_generations_per_prompt: 4        # 8→4 防 host-RAM OOM（GRPO LOO 基线 4 样本仍有效）
   max_rollout_turns: 1                 # 单轮：答一道题，环境判分即结束
-  max_num_steps: 500
+  max_num_steps: 300                   # 这类任务 ~100-200 步即收敛，500 多为空转；val_at_end 兜底
   val_period: 50
   val_at_start: true
   val_at_end: true
@@ -53,5 +72,5 @@ logger:
   monitor_gpus: true
   num_val_samples_to_print: 3   # 每次验证把 3 条完整对话(含生成 token)打印到作业日志(ray job logs)
   swanlab:
-    project: "grpo_qwen3.5-9b_qa-rl_v1"
-    name: "lora-lr1e4-g8-kl0.01"
+    project: "qa-rl-compare" # 与实验二同 project，便于在 SwanLab 同图对比两条曲线
+    name: "baseline-singleturn-notool"
