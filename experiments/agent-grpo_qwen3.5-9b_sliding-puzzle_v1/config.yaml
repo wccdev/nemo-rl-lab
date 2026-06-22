@@ -1,0 +1,73 @@
+# 多轮 Agent GRPO·最简可跑示例 —— 用 NeMo-RL 自带的「滑块拼图」环境。
+# 选它的原因：多轮 rollout、奖励可自动判定（拼好=1），且【无需任何外部服务】
+# （不接裁判 LLM / RAGFlow / 工具服务器），单机 1×H100 开箱即跑，最适合先把链路跑通。
+# 入口是 NeMo-RL 自带 examples/run_grpo_sliding_puzzle.py（本实验 run.sh 已设 ENTRY，无需自写 run.py）。
+#
+# 继承官方多轮基底 + 模型 + 后端 + LoRA，只写差异（NeMo-RL 0.6.0 原生 defaults 机制）：
+defaults:
+  - ../../configs/base/grpo_sliding_puzzle.yaml   # 多轮拼图环境 + 多轮 rollout（自带，无外部依赖）
+  - ../../configs/models/qwen3.5-9b.yaml          # 9B 模型片段
+  - ../../configs/base/grpo_megatron.yaml         # Megatron-Core 后端（单卡 colocated；删此行回 DTensor）
+  - ../../configs/base/grpo_lora.yaml             # LoRA（单卡跑 9B 的关键；删此行=全参数，单卡几乎必 OOM）
+
+# ══════════════════════════════════════════════════════════════════════════
+#  调参速查 —— 你主要动下面【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
+#  本实验目标集群：见同目录 cluster 文件（h100 单机单卡）；下列数值按 1×H100 80GB 调，换卡用 --profile 覆盖。
+# ──────────────────────────────────────────────────────────────────────────
+#  旋钮 (在哪)                                    作用 / 典型范围 / 调过头会怎样
+#  lr / dim / alpha (grpo_lora 基底)              LoRA 容量与步长。默认 lr1e-4 / dim8 / alpha16
+#  reference_policy_kl_penalty (loss_fn)          贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏
+#  num_generations_per_prompt (grpo)              每题采样数（组内基线）。8=有对有错才有梯度
+#  max_rollout_turns (grpo)                       多轮上限：每轮模型走一步棋（拼图越大需越多轮）
+#  game_config.size / shuffle_moves (env)         拼图难度：2=2x2 最简（先跑通），3=3x3 更难
+#  gpu_memory_utilization (policy.generation)     单卡 colocated 下 vLLM 占显存比例；OOM 降、富余升(0.3~0.5)
+#  max_total_sequence_length (policy)             上下文长度。多轮会累积；OOM 先降这个
+#  max_num_steps / val_period (grpo)              训多久 / 多久验证一次
+# ══════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────── ① 调参区（按需改）─────────────────────────────
+policy:
+  # base 模型（GRPO 从 base 起训；改 instruct 版："Qwen/Qwen3.5-9B"，需先 prefetch）。
+  model_name: "Qwen/Qwen3.5-9B-Base"
+  tokenizer:
+    name: "Qwen/Qwen3.5-9B-Base"
+  max_total_sequence_length: 1024   # 2x2 拼图轮次短，1024 够用；OOM 先降到 768
+  train_global_batch_size: 32        # 必须 = num_prompts_per_step × num_generations_per_prompt（4×8）
+  generation:
+    max_new_tokens: 256              # 多轮：限制每轮生成长度，给多轮留空间、省 KV
+    vllm_cfg:
+      gpu_memory_utilization: 0.4    # 单卡与训练分时共用这张 H100；OOM 降到 0.3，富余可升到 0.5
+
+grpo:
+  num_prompts_per_step: 4
+  num_generations_per_prompt: 8      # 每题 8 条：组内有对有错→优势非零，GRPO 才有梯度
+  max_rollout_turns: 12              # 2x2 小拼图 12 轮足够走完（拼图调大要同步加大）
+  max_num_steps: 50                  # 先跑通、看 reward 抬头；要收敛再调大
+  val_period: 10                     # step 0/10/20/30/40/50 各验证一次
+  val_at_start: true
+  val_at_end: true
+  max_val_samples: 16
+  val_batch_size: 16                 # <= max_val_samples
+
+loss_fn:
+  reference_policy_kl_penalty: 0.01  # 贴原模型力度；0=纯追奖励易退化，过大学不动
+
+# ────────────────────────── ② 一般不动（环境难度 / 日志）──────────────────────────
+# 滑块拼图环境（NeMo-RL 自带 sliding_puzzle_game）：把数字块滑到有序即拼好，奖励=1。
+env:
+  sliding_puzzle_game:
+    cfg:
+      game_config:
+        size: 2            # 2x2 最简拼图（先跑通）；想更难改 3（3x3，需同步加大 max_rollout_turns / seq）
+        shuffle_moves: 3   # 打乱步数，越大越难
+      max_moves: 12        # 单局最大步数，约等于 max_rollout_turns
+
+logger:
+  wandb_enabled: false
+  tensorboard_enabled: false
+  swanlab_enabled: true
+  monitor_gpus: true
+  num_val_samples_to_print: 3        # 每次验证把 3 条完整多轮对话打印到作业日志（lab job logs / lab job samples）
+  swanlab:
+    project: "agent-grpo_qwen3.5-9b_sliding-puzzle_v1"
+    name: "h100-lora-2x2-g8"

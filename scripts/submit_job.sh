@@ -59,6 +59,11 @@ for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSF
           # UV_NO_SYNC=1：让集群 run.sh 的 `uv run` 跳过 sync、直接用已装好的 venv，
           # 避开 GitHub 直链依赖(flash-attn)偶发 504 拖垮整个作业（venv 已建好时强烈建议设 1）。
           "UV_NO_SYNC",
+          # NeMo-RL 环境一致性开关：容器代码/依赖与源码漂移时用。
+          #   NRL_FORCE_REBUILD_VENVS=true 强制 worker 按当前源码重建隔离 venv（修「configure_worker
+          #     返回值个数不符」之类的 driver 新/worker 旧不一致；首跑较慢，建好后删掉此项）。
+          #   NRL_IGNORE_VERSION_MISMATCH=1 仅压制告警、不修复（不推荐长期开）。
+          "NRL_FORCE_REBUILD_VENVS", "NRL_IGNORE_VERSION_MISMATCH",
           # 简答题裁判 LLM（qa-rl / qa-rl-agent）；外部知识库检索（qa-rl-agent）。
           "JUDGE_BASE_URL", "JUDGE_MODEL", "JUDGE_API_KEY", "JUDGE_CONCURRENCY", "JUDGE_TIMEOUT",
           "KB_BASE_URL", "KB_API_KEY", "KB_DATASET_IDS", "KB_TOP_K", "KB_TIMEOUT",

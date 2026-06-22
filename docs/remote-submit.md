@@ -39,7 +39,7 @@ NeMo-RL 的 uv 环境提供。集群一旦起好，后面所有提交都在 Mac 
 ### 2.1 Mac 端
 
 Ray CLI（job submission 客户端，仅提交用、无需 GPU）由 **uv 管理**，作为可选依赖 `submit`，
-版本已对齐 NeMo-RL 0.6.0 的 `ray[default]==2.54.0`（避免与集群 Ray 协议不兼容）。**不要用 `pip install`**
+版本须对齐【你的集群】的 Ray（当前集群实测 `2.55.1`，避免 job submission 协议不兼容）。**不要用 `pip install`**
 （Homebrew Python 会被 PEP 668 拦，且版本不可控）。
 
 ```bash
@@ -240,7 +240,7 @@ SwanLab 只有**指标曲线**，不含模型实际输出的 token。
 | 找不到 NeMo-RL / `run_grpo.py` | 容器里没装 NeMo-RL，或 `NEMO_RL_DIR` 指错（必须是**容器内**路径）。 |
 | `OSError: couldn't connect to 'https://hf-mirror.com'` | **不要在 `submit.env` 里设 `HF_ENDPOINT`**（镜像只适合本机 `lab prepare`；Spark 容器常连不上）。在容器内先 `bash scripts/prefetch_hf_model.sh Qwen/Qwen3.5-4B` 把模型拉到 `HF_HOME`，再 submit。gated 模型要 `HF_TOKEN`。 |
 | 模型/数据下载慢或失败 | 本机 prepare 可临时 `HF_ENDPOINT=https://hf-mirror.com`；集群 submit 留空 `HF_ENDPOINT`，用 `prefetch_hf_model.sh` 或集群直连 `huggingface.co`。 |
-| `ray job submit` 版本协议报错 | Mac 的 `ray` 版本与集群差太多。对齐到相近版本（pyproject 已锁 `ray[default]==2.54.0`）。 |
+| `ray job submit` 版本协议报错 | Mac 的 `ray` 版本与集群不一致。对齐集群版本（在集群 dashboard `/api/version` 查 `ray_version`，改 pyproject 的 `submit` extra 后 `uv sync --extra submit`；当前为 `2.55.1`）。 |
 | `Failed to merge the Job's runtime env ... conflict` | 作业的 `runtime_env` 与 NeMo-RL `init_ray` 里 `ray.init` 的 `runtime_env` 键重叠。各实验 `run.sh` 已 `export RAY_OVERRIDE_JOB_RUNTIME_ENV=1` 让 Ray 合并；若你自定义入口，记得也设这个。 |
 | `KeyError ... 'GSM8K_DATA_DIR' not found` | 数据没准备/没上传。先 `lab prepare gsm8k`（生成 `datasets/gsm8k/`，随作业上传，`run.sh` 自动指向）；用集群上已有数据则在 `submit.env` 设 `GSM8K_DATA_DIR=/容器内绝对路径`。 |
 | 只有 1 个节点参与 | worker 没起或没连上 head。在容器里 `uv run ray status` 看节点数；检查 `HEAD_IP`/端口。 |
