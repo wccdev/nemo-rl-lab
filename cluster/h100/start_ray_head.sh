@@ -11,7 +11,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/env.sh"
 
-HEAD_IP="${HEAD_IP:-127.0.0.1}"                      # 单机绑本地回环即可
+HEAD_IP="${HEAD_IP:-172.19.12.24}"                      # 单机绑本地回环即可
 RAY_PORT="${RAY_PORT:-6379}"
 OBJECT_STORE_MEM="${OBJECT_STORE_MEM:-8589934592}"   # 8GB（H100 机器 host RAM 通常充足）
 

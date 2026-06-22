@@ -16,17 +16,18 @@
 > 训练跑在远程 H100 容器里，你只在自己机器上提交、看结果，全程不进容器、本机无需 GPU。
 
 ```bash
-# 1) 装本机 CLI（只是提交客户端，无需 GPU）+ 填一次集群地址
+# 1) 装本机 CLI（只是提交客户端，无需 GPU）+ 填两层集群配置（各填一次）
 uv sync --extra submit
-cp cluster/submit.env.h100.example cluster/submit.env   # 改两处：机器 VPN IP、RUN_USER
+cp cluster/submit.env.example      cluster/submit.env        # 通用层：密钥 + RUN_USER（换集群不动）
+cp cluster/h100/submit.env.example cluster/h100/submit.env   # 集群层：改机器 VPN IP（地址跟集群走）
 
 # 2) 选实验、按需调参：打开 experiments/<exp>/config.yaml 顶部「调参速查」改几行
 lab ls                                          # 看现成实验
-lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1  # 或 fork 一个来调参（自动改 SwanLab 名）
+lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1  # 或 fork 一个来调参（自动改 SwanLab 名、继承目标集群）
 
 # 3) 准备数据（随作业上传）→ 提交 → 看结果
 lab prepare gsm8k
-lab submit grpo_qwen3.5-4b_gsm8k_v1
+lab submit grpo_qwen3.5-4b_gsm8k_v1             # 用实验自带的目标集群；--profile 可临时换
 lab job logs <job_id> -f                        # 实时日志
 lab web                                         # 本地面板：reward 曲线 + 验证对话
 ```
@@ -41,7 +42,7 @@ lab web                                         # 本地面板：reward 曲线 +
 | `gb10-spark` | 2× NVIDIA DGX Spark（GB10 Grace-Blackwell），通过 Ray 组成 2 节点集群 | `cluster/gb10-spark/` |
 | `b300` | NVIDIA B300（后续使用） | `cluster/b300/` |
 
-训练配置与硬件解耦：NeMo-RL 0.6.0 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`，切换硬件只换 profile。
+训练配置与硬件解耦：NeMo-RL 0.6.0 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`。每个实验**自带目标集群**（实验目录下 `cluster` 文件，`lab new --cluster` 写入）——因为 batch/seq/LoRA/显存等超参都是按某张卡的显存调出来的；`lab submit --profile` 可临时换卡跑。
 
 ## 目录结构
 
@@ -119,7 +120,7 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 
 ```bash
 uv run lab ls                                # 列出实验 / 项目
-uv run lab new grpo_qwen3.5-4b_gsm8k_v1      # 从模板新建实验
+uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --cluster h100   # 从模板新建实验（绑定目标集群）
 uv run lab prepare gsm8k                     # 预处理数据集（gsm8k / alpaca / qa_rl）
 uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（执行在集群）
 uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   # 在集群容器内直接跑
@@ -153,17 +154,19 @@ uv run lab --show-completion         # 只打印脚本，自行决定放哪
 ## 新建一个实验（细节）
 
 ```bash
-# 方式一：从空白模板新建
-uv run lab new grpo_qwen3.5-4b_gsm8k_v1   # 或 bash scripts/new_experiment.sh experiments <name>
+# 方式一：从空白模板新建，并绑定目标集群（写入实验自带 cluster 文件）
+uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --cluster h100   # 或 bash scripts/new_experiment.sh experiments <name> "" h100
 
 # 方式二（推荐调参）：fork 一个现成实验，只改超参试不同配置
 uv run lab new grpo_qwen3.5-4b_gsm8k_lr1e4 --from grpo_qwen3.5-4b_gsm8k_v1
-#   自动 copy 目录，并把 config.yaml 的 swanlab project/name 改成新实验名（避免日志撞车）
+#   自动 copy 目录、把 config.yaml 的 swanlab project/name 改成新名（避免日志撞车）、并继承来源实验的目标集群
+#   想换到别的集群再加 --cluster <profile>
 
 cd experiments/<新实验名>
-# 1. 改 config.yaml 顶部「调参区」：lr / kl / 采样数 / 数据集 / seq
-# 2. （新建空白时）改 README.md 与 defaults；若是 SFT/Agent，run.sh 顶部改 ENTRY（见 configs/README.md）
-# 3. 提交：
+# 1. 改 config.yaml 顶部「调参区」：lr / kl / 采样数 / 数据集 / seq（这些数值按目标集群的卡调）
+# 2. 目标集群写在同目录 cluster 文件（lab new 已写好；想改：echo gb10-spark > cluster）
+# 3. （新建空白时）改 README.md 与 defaults；若是 SFT/Agent，run.sh 顶部改 ENTRY（见 configs/README.md）
+# 4. 提交（用实验自带集群；--profile 可临时换）：
 uv run lab submit <新实验名>
 ```
 
@@ -189,11 +192,12 @@ uv run lab submit <新实验名>
 #    node1 容器: bash cluster/gb10-spark/start_ray_head.sh
 #    node2 容器: bash cluster/gb10-spark/start_ray_worker.sh
 
-# B. 一次性：Mac 端装 Ray CLI（uv 管理，版本对齐集群）+ 填提交配置
+# B. 一次性：Mac 端装 Ray CLI（uv 管理，版本对齐集群）+ 填两层提交配置
 uv sync --extra submit
-cp cluster/submit.env.example cluster/submit.env   # 填 RAY_DASHBOARD_ADDRESS / NEMO_RL_DIR / 密钥
+cp cluster/submit.env.example            cluster/submit.env            # 通用层：密钥 + RUN_USER
+cp cluster/gb10-spark/submit.env.example cluster/gb10-spark/submit.env # 集群层：RAY_DASHBOARD_ADDRESS / NEMO_RL_DIR / 路径
 
-# C. 每次：在 Mac 上提交、看/停作业（lab job 自动读 submit.env 的地址）
+# C. 每次：在 Mac 上提交、看/停作业（lab job 自动读对应集群层 submit.env 的地址）
 uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
 uv run lab job list                 # 查看作业
 uv run lab job logs <job_id> -f     # 实时日志

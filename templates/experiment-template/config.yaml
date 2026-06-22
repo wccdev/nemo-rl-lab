@@ -41,3 +41,4 @@ logger:
 # =====================================================
 # 注：checkpoint 目录与 log 目录由 run.sh 自动指到本实验 outputs/（已 .gitignore），
 #     集群/硬件相关（节点数、并行度）由 cluster/<profile>/overrides.conf 在运行时叠加。
+#     本实验默认集群写在同目录 cluster 文件（lab new --cluster 设置）；下列数值应按该卡显存调。

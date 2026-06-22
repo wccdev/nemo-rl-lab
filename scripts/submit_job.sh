@@ -3,30 +3,41 @@
 # 本仓库代码随 --working-dir 自动上传并分发到所有节点（含 worker，自定义环境靠这个被 import）；
 # NeMo-RL 框架须已装在容器里（不随作业上传）。
 #
-# 准备：
-#   uv sync --extra submit                            # 开发机装 Ray CLI（无需 GPU；lab submit 也会自动按需装）
-#   cp cluster/submit.env.example cluster/submit.env  # 填好地址 / 路径 / 密钥
+# 准备（两层配置，各填一次）：
+#   uv sync --extra submit                                            # 开发机装 Ray CLI（lab submit 也会自动按需装）
+#   cp cluster/submit.env.example cluster/submit.env                  # 通用层：密钥 / RUN_USER / 默认 profile（换集群不动）
+#   cp cluster/<profile>/submit.env.example cluster/<profile>/submit.env  # 集群专属：地址 / 容器路径（随 profile 走）
 # 用法：
 #   bash scripts/submit_job.sh experiments/agent-grpo_qwen3.5-9b_multitool_v1 [gb10-spark]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-ENV_FILE="${SUBMIT_ENV:-${REPO_ROOT}/cluster/submit.env}"
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a; source "${ENV_FILE}"; set +a
-else
-  echo "缺少 ${ENV_FILE}"
-  echo "请先： cp cluster/submit.env.example cluster/submit.env 并填写地址/路径。"
-  exit 1
-fi
+# 分层加载：先通用层（密钥/默认 profile），再集群专属层（地址/路径，覆盖通用层）。
+# 换集群只需改 profile（参数 / DEFAULT_CLUSTER_PROFILE），不必回头编辑同一个文件、也不会互相覆盖。
+SHARED_ENV="${SUBMIT_ENV:-${REPO_ROOT}/cluster/submit.env}"
+[[ -f "${SHARED_ENV}" ]] && { set -a; source "${SHARED_ENV}"; set +a; }
 
 EXP_REL="${1:?用法: submit_job.sh <实验相对路径> [profile]，如 experiments/grpo_qwen3.5-9b_gsm8k_v1}"
 EXP_REL="${EXP_REL%/}"
-export CLUSTER_PROFILE="${2:-${DEFAULT_CLUSTER_PROFILE:-gb10-spark}}"
+# 实验自带的默认集群（软绑定）：experiments/<name>/cluster 一行 profile 名。
+# 这些超参都是按该集群的卡调出来的；换卡用 --profile（下方 $2）临时覆盖。
+EXP_PROFILE=""
+[[ -f "${REPO_ROOT}/${EXP_REL}/cluster" ]] && EXP_PROFILE="$(tr -d '[:space:]' < "${REPO_ROOT}/${EXP_REL}/cluster")"
+# 选集群：--profile($2) > 实验绑定 > 环境 CLUSTER_PROFILE > 通用层 DEFAULT_CLUSTER_PROFILE > gb10-spark
+export CLUSTER_PROFILE="${2:-${EXP_PROFILE:-${CLUSTER_PROFILE:-${DEFAULT_CLUSTER_PROFILE:-gb10-spark}}}}"
+PROFILE_ENV="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/submit.env"
+[[ -f "${PROFILE_ENV}" ]] && { set -a; source "${PROFILE_ENV}"; set +a; }
 
-: "${RAY_DASHBOARD_ADDRESS:?请在 cluster/submit.env 设置 RAY_DASHBOARD_ADDRESS（如 http://192.168.1.10:8265）}"
-: "${NEMO_RL_DIR:?请在 cluster/submit.env 设置 NEMO_RL_DIR（容器内 NeMo-RL 路径）}"
+if [[ ! -f "${SHARED_ENV}" && ! -f "${PROFILE_ENV}" ]]; then
+  echo "缺少提交配置：${SHARED_ENV} 与 ${PROFILE_ENV} 都不存在。"
+  echo "请先：cp cluster/submit.env.example cluster/submit.env                      # 通用层：密钥/RUN_USER/默认 profile"
+  echo "      cp cluster/${CLUSTER_PROFILE}/submit.env.example cluster/${CLUSTER_PROFILE}/submit.env   # 集群专属：地址/路径"
+  exit 1
+fi
+
+: "${RAY_DASHBOARD_ADDRESS:?请在 cluster/${CLUSTER_PROFILE}/submit.env 设置 RAY_DASHBOARD_ADDRESS（如 http://192.168.1.10:8265）}"
+: "${NEMO_RL_DIR:?请在 cluster/${CLUSTER_PROFILE}/submit.env 设置 NEMO_RL_DIR（容器内 NeMo-RL 路径）}"
 
 [[ -d "${REPO_ROOT}/${EXP_REL}" ]] || { echo "找不到实验目录: ${EXP_REL}"; exit 1; }
 [[ -f "${REPO_ROOT}/${EXP_REL}/run.sh" ]] || { echo "实验缺少 run.sh: ${EXP_REL}"; exit 1; }
@@ -61,7 +72,7 @@ print(json.dumps({
     "excludes": [
         "datasets/**/raw/**", "datasets/**/data/**",
         "**/outputs/**", ".git/**", "**/__pycache__/**",
-        "cluster/submit.env", "cluster/secrets.env", "**/*.key",
+        "cluster/submit.env", "cluster/*/submit.env", "cluster/secrets.env", "**/*.key",
     ],
     "env_vars": env_vars,
 }))

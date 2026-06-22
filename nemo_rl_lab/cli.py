@@ -10,11 +10,11 @@
 
 常用：
     uv run lab ls                                  列出实验 / 项目
-    uv run lab new grpo_qwen3.5-4b_gsm8k_v1        从模板新建实验
-    uv run lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1   fork 现成实验来调参
+    uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --cluster h100   从模板新建实验（绑定目标集群）
+    uv run lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1   fork 现成实验来调参（继承其集群）
     uv run lab prepare gsm8k                       预处理数据集
     uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   从本机提交作业到 Ray 集群
-    uv run lab job list                            查看集群上的作业（地址取 submit.env）
+    uv run lab job list                            查看集群上的作业（地址取 cluster/<profile>/submit.env）
     uv run lab job logs <job_id> -f                实时看作业日志
     uv run lab job stop <job_id>                   停止作业
     uv run lab web                                 本地 Web 面板：reward 曲线 + 验证对话
@@ -63,12 +63,11 @@ def _run(cmd: list[str], env: dict | None = None, cwd: Path | None = None) -> in
     return subprocess.run(cmd, env=full_env, cwd=str(cwd or ROOT)).returncode
 
 
-def _read_submit_env() -> dict[str, str]:
-    """读取 cluster/submit.env 的键值（忽略注释/空行），用于取 RAY_DASHBOARD_ADDRESS 等。"""
+def _read_env_file(path: Path) -> dict[str, str]:
+    """读取一个 env 文件的键值（忽略注释/空行）。"""
     env: dict[str, str] = {}
-    f = ROOT / "cluster" / "submit.env"
-    if f.is_file():
-        for line in f.read_text().splitlines():
+    if path.is_file():
+        for line in path.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -77,14 +76,28 @@ def _read_submit_env() -> dict[str, str]:
     return env
 
 
-def _ray_address(explicit: Optional[str]) -> str:
-    """确定 Ray dashboard 地址：显式 > 环境变量 > cluster/submit.env。"""
-    addr = explicit or os.environ.get("RAY_DASHBOARD_ADDRESS") or _read_submit_env().get(
+def _read_submit_env(profile: Optional[str] = None) -> dict[str, str]:
+    """分层读取提交配置：通用层 cluster/submit.env（密钥/默认 profile），
+    叠加集群专属层 cluster/<profile>/submit.env（地址/容器路径，覆盖通用层）。
+    profile 未显式给出时取 环境 CLUSTER_PROFILE > 通用层 DEFAULT_CLUSTER_PROFILE。"""
+    shared = _read_env_file(ROOT / "cluster" / "submit.env")
+    prof = profile or os.environ.get("CLUSTER_PROFILE") or shared.get("DEFAULT_CLUSTER_PROFILE")
+    merged = dict(shared)
+    if prof:
+        merged.update(_read_env_file(ROOT / "cluster" / prof / "submit.env"))
+    return merged
+
+
+def _ray_address(explicit: Optional[str], profile: Optional[str] = None) -> str:
+    """确定 Ray dashboard 地址：显式 > 环境变量 > 分层 submit.env（集群专属层优先）。"""
+    addr = explicit or os.environ.get("RAY_DASHBOARD_ADDRESS") or _read_submit_env(profile).get(
         "RAY_DASHBOARD_ADDRESS"
     )
     if not addr:
+        prof = profile or os.environ.get("CLUSTER_PROFILE") or "<profile>"
         raise typer.BadParameter(
-            "未找到 Ray 地址。请在 cluster/submit.env 设置 RAY_DASHBOARD_ADDRESS，或用 --address 指定。"
+            f"未找到 Ray 地址。请在 cluster/{prof}/submit.env 设置 RAY_DASHBOARD_ADDRESS，"
+            "或用 --address 指定（也可用 --profile 选集群）。"
         )
     return addr
 
@@ -165,11 +178,19 @@ def new(
         None, "--from", autocompletion=_complete_exp,
         help="从此现成实验 fork：copy 目录 + 把 config.yaml 的 swanlab project/name 与 README 标题改成新名",
     ),
+    cluster: Optional[str] = typer.Option(
+        None, "--cluster", autocompletion=_complete_profile,
+        help="本实验默认集群（写入实验自带 cluster 文件；不给则用模板默认 / 继承来源实验）",
+    ),
     kind: Kind = typer.Option(Kind.experiments, "--kind", help="放到 experiments 还是 projects"),
 ) -> None:
     cmd = ["bash", str(SCRIPTS / "new_experiment.sh"), kind.value, name]
-    if from_exp:
-        cmd.append(_resolve_exp(from_exp))
+    # new_experiment.sh 位置参数： <kind> <name> [来源实验] [集群profile]；
+    # 只给 --cluster 时也要占住第 3 位（空串=空白模板），让 profile 落到第 4 位。
+    if from_exp or cluster:
+        cmd.append(_resolve_exp(from_exp) if from_exp else "")
+    if cluster:
+        cmd.append(cluster)
     raise typer.Exit(_run(cmd))
 
 
@@ -263,25 +284,30 @@ def ray(
 # ----------------------------- Ray 作业管理（本机对集群操作）-----------------------------
 job_app = typer.Typer(
     no_args_is_help=True,
-    help="Ray 作业管理（在本机对集群操作；地址默认取 cluster/submit.env 的 RAY_DASHBOARD_ADDRESS）",
+    help="Ray 作业管理（在本机对集群操作；地址默认取 cluster/<profile>/submit.env 的 RAY_DASHBOARD_ADDRESS，--profile 切集群）",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(job_app, name="job")
 
 _ADDR_OPT = typer.Option(None, "--address", "-a", help="Ray dashboard 地址（默认取 submit.env）")
+_PROF_OPT = typer.Option(
+    None, "--profile", autocompletion=_complete_profile,
+    help="集群 profile（决定读 cluster/<profile>/submit.env 的地址；默认取 submit.env 的 DEFAULT_CLUSTER_PROFILE）",
+)
 
 
 @app.command(help="启动本地 Web 面板：看训练 reward 曲线 + 验证对话（数据取自 Ray 日志，纯本地只读）")
 def web(
     port: int = typer.Option(8080, "--port", "-p", help="本地服务端口"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
     no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
 ) -> None:
     # 取数走 ray JobSubmissionClient（同 lab job samples）→ --extra submit；
     # HTTP 服务用 FastAPI + uvicorn → --extra web。一条命令即起。
     cmd = ["uv", "run", "--extra", "submit", "--extra", "web",
            "python", str(SCRIPTS / "web_dashboard.py"),
-           "--address", _ray_address(address), "--port", str(port)]
+           "--address", _ray_address(address, profile), "--port", str(port)]
     if not no_open:
         cmd.append("--open")
     raise typer.Exit(_run(cmd))
@@ -291,9 +317,10 @@ def web(
 def job_list(
     all_jobs: bool = typer.Option(False, "--all", help="显示全部（默认最近 15 条）"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
-           "--address", _ray_address(address)]
+           "--address", _ray_address(address, profile)]
     if all_jobs:
         cmd.append("--all")
     raise typer.Exit(_run(cmd))
@@ -304,11 +331,12 @@ def job_logs(
     job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
     follow: bool = typer.Option(False, "--follow", "-f", help="实时跟随输出"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
     args = ["logs", job_id]
     if follow:
         args.append("--follow")
-    raise typer.Exit(_ray_job(args, _ray_address(address)))
+    raise typer.Exit(_ray_job(args, _ray_address(address, profile)))
 
 
 @job_app.command("samples", help="本地查看验证样本轨迹（含多轮工具调用，从作业日志抽取）")
@@ -316,9 +344,10 @@ def job_samples(
     job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
     last: int = typer.Option(0, "--last", "-n", help="只看最近 N 次验证（默认 0=全部）"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "job_samples.py"),
-           job_id, "--address", _ray_address(address)]
+           job_id, "--address", _ray_address(address, profile)]
     if last:
         cmd += ["--last", str(last)]
     raise typer.Exit(_run(cmd))
@@ -328,33 +357,37 @@ def job_samples(
 def job_status(
     job_id: str = typer.Argument(..., help="作业 ID"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
-    raise typer.Exit(_ray_job(["status", job_id], _ray_address(address)))
+    raise typer.Exit(_ray_job(["status", job_id], _ray_address(address, profile)))
 
 
 @job_app.command("stop", help="停止作业（运行中 → 终止）")
 def job_stop(
     job_id: str = typer.Argument(..., help="作业 ID"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
-    raise typer.Exit(_ray_job(["stop", job_id], _ray_address(address)))
+    raise typer.Exit(_ray_job(["stop", job_id], _ray_address(address, profile)))
 
 
 @job_app.command("delete", help="删除某个已结束的作业记录（运行中需先 stop）")
 def job_delete(
     job_id: str = typer.Argument(..., help="作业 ID"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
-    raise typer.Exit(_ray_job(["delete", job_id], _ray_address(address)))
+    raise typer.Exit(_ray_job(["delete", job_id], _ray_address(address, profile)))
 
 
 @job_app.command("clean", help="批量删除所有已结束(FAILED/SUCCEEDED/STOPPED)的作业记录")
 def job_clean(
     yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认"),
     address: Optional[str] = _ADDR_OPT,
+    profile: Optional[str] = _PROF_OPT,
 ) -> None:
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
-           "--address", _ray_address(address), "--clean"]
+           "--address", _ray_address(address, profile), "--clean"]
     if yes:
         cmd.append("--yes")
     raise typer.Exit(_run(cmd))

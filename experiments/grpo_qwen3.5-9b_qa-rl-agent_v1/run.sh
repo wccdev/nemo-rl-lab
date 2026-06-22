@@ -3,13 +3,18 @@
 # 用法： NEMO_RL_DIR=/path/to/NeMo-RL CLUSTER_PROFILE=gb10-spark bash run.sh
 set -euo pipefail
 
-# 硬件 profile：gb10-spark | h200
-CLUSTER_PROFILE="${CLUSTER_PROFILE:-gb10-spark}"
 # 本地 NeMo-RL 0.6.0 源码目录（必填）
 NEMO_RL_DIR="${NEMO_RL_DIR:?请设置 NEMO_RL_DIR 指向本地 NeMo-RL 0.6.0 源码目录}"
 
 EXP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${EXP_DIR}/../.." && pwd)"
+# 硬件 profile：默认读本实验绑定的集群（同目录 cluster 文件，可选 cluster/ 下 h100 | gb10-spark | b300）。
+# 本实验超参（batch/seq/LoRA/并行度/显存）都是按该集群的卡调出来的，换卡通常要重调。
+# 优先级：环境 CLUSTER_PROFILE（lab submit 注入 / --profile）> 自带 cluster 文件 > gb10-spark 兜底。
+if [[ -z "${CLUSTER_PROFILE:-}" && -f "${EXP_DIR}/cluster" ]]; then
+  CLUSTER_PROFILE="$(tr -d '[:space:]' < "${EXP_DIR}/cluster")"
+fi
+CLUSTER_PROFILE="${CLUSTER_PROFILE:-gb10-spark}"
 CONFIG="${EXP_DIR}/config.yaml"                        # 继承基底 + 本实验差异
 PROFILE_CONF="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/overrides.conf"
 PROFILE_ENV="${REPO_ROOT}/cluster/${CLUSTER_PROFILE}/env.sh"
