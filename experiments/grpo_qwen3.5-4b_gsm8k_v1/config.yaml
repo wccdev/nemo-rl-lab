@@ -8,32 +8,48 @@ defaults:
   - ../../configs/base/grpo_lora.yaml # LoRA（下面覆盖成 4B 配方）
   - ../../configs/base/grpo_noncolocated.yaml # 非 colocated：1 卡生成 / 1 卡训练 → PP=1
 
+# ══════════════════════════════════════════════════════════════════════════
+#  调参速查 —— 你主要动下面【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
+# ──────────────────────────────────────────────────────────────────────────
+#  旋钮 (在哪)                             作用 / 典型范围 / 调过头会怎样
+#  lr  (policy.megatron_cfg.optimizer)     学习率。LoRA 1e-4~2e-4。太高→reward 崩/发散；太低→学不动
+#  dim/alpha (policy.megatron_cfg.peft)    LoRA 适配器容量。dim 8/16/32/64，alpha≈2×dim。大→能力强但更易过拟合、更吃显存
+#  reference_policy_kl_penalty (loss_fn)   贴原模型的力度。0~0.05。大→稳但学得慢；小→学得快但易跑偏/语言退化
+#  num_generations_per_prompt (grpo)       每题采样数（组内算 advantage）。4/8/16。多→梯度稳但更慢更吃显存
+#  num_prompts_per_step (grpo)             每步题目数。× 上一行 = train_global_batch_size（三者必须相等）
+#  max_total_sequence_length (policy)      上下文长度。数学题 1024 够用。大→更吃显存、更慢
+#  temperature (policy.generation, 在基底) 采样多样性（RL 探索）。0.8~1.2。小→采样趋同、探索弱
+#  max_num_steps / val_period (grpo)       训多久 / 多久验证一次
+# ══════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────── ① 调参区（按需改）─────────────────────────────
 policy:
-  max_total_sequence_length: 1024 # 4B 实测值
-  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt
+  max_total_sequence_length: 1024 # 上下文长度（4B 实测值）；改大更吃显存
+  train_global_batch_size: 16 # 必须 = num_prompts_per_step × num_generations_per_prompt（4×4）
   generation_batch_size: 4
   megatron_cfg:
     peft: # 4B LoRA：秩比 9B 大
-      dim: 16
-      alpha: 32
+      dim: 16 # LoRA 秩 r：4/8/16/32/64，大=容量大但更易过拟合
+      alpha: 32 # 缩放因子，经验 ≈ 2×dim
     optimizer: # 4B LoRA 学习率比 9B 高
-      lr: 2.0e-4
+      lr: 2.0e-4 # LoRA 典型 1e-4~2e-4；太高 reward 会崩
       min_lr: 2.0e-5
 
 grpo:
-  num_prompts_per_step: 4
-  num_generations_per_prompt: 4
-  max_rollout_turns: 1 # 单轮：答一道题
-  max_num_steps: 500
-  val_period: 30
+  num_prompts_per_step: 4 # 每步题目数
+  num_generations_per_prompt: 4 # 每题采样数（组内基线）；× 上面 = global batch
+  max_rollout_turns: 1 # 单轮：答一道题（多轮 Agent 才 >1）
+  max_num_steps: 500 # 训练总步数
+  val_period: 30 # 每 30 步验证一次
   val_at_start: true
   val_at_end: true
   max_val_samples: 256
   val_batch_size: 64 # <= max_val_samples
 
 loss_fn:
-  reference_policy_kl_penalty: 0.01
+  reference_policy_kl_penalty: 0.01 # 贴原模型力度；0=纯追奖励易退化，过大学不动
 
+# ────────────────────────── ② 一般不动（数据接法 / 日志）──────────────────────────
 # 用 ResponseDataset 接预处理好的 GSM8K jsonl（与 9B 实验共用 datasets/gsm8k）。
 # 先 `lab prepare gsm8k`；GSM8K_DATA_DIR 由 run.sh 自动指向仓库内 datasets/gsm8k（提交时随作业上传），无需手填。
 data:
@@ -64,7 +80,7 @@ logger:
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
-  num_val_samples_to_print: 3   # 每次验证把 3 条完整对话(含生成 token)打印到作业日志(ray job logs)
+  num_val_samples_to_print: 3 # 每次验证把 3 条完整对话(含生成 token)打印到作业日志(ray job logs)
   swanlab:
     project: "grpo_qwen3.5-4b_gsm8k_v1"
     name: "lora-lr2e4-dim16-noncolo"

@@ -5,6 +5,16 @@ defaults:
   - ../../configs/base/sft.yaml
   - ../../configs/models/qwen3.5-4b.yaml
 
+# ══════════════════════════════════════════════════════════════════════════
+#  调参速查（SFT）—— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
+# ──────────────────────────────────────────────────────────────────────────
+#  lr (policy.optimizer.kwargs)           学习率。SFT 全参 ~1e-5/5e-6。太高过拟合/不稳，太低学不动
+#  max_num_epochs / max_num_steps (sft)   训几轮 / 步数上限（先到先停）
+#  val_period (sft)                       多少步验证一次
+#  max_total_sequence_length (policy)     上下文长度。大→更吃显存、更慢
+# ══════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────── ① 调参区（按需改）─────────────────────────────
 policy:
   max_total_sequence_length: 2048
   # 基底 sft.yaml 设了 squad 专用 chat_template；指令数据用模型默认模板，置 null
@@ -19,6 +29,7 @@ sft:
   max_num_steps: 2000
   val_period: 100
 
+# ────────────────────────── ② 一般不动（数据接法 / 日志）──────────────────────────
 # 用 ResponseDataset 接预处理好的 Alpaca jsonl（见 common/data/prepare_alpaca.py）。
 # 先跑预处理脚本，再 `export ALPACA_DATA_DIR=<repo>/datasets/alpaca`。
 data:

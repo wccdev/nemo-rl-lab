@@ -43,6 +43,8 @@ env_vars = {
 # 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
 for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
           "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT",
+          # 多人共用平台：产物隔离到 OUTPUT_ROOT/<RUN_USER>/<实验名>（见各实验 run.sh）。
+          "RUN_USER",
           # UV_NO_SYNC=1：让集群 run.sh 的 `uv run` 跳过 sync、直接用已装好的 venv，
           # 避开 GitHub 直链依赖(flash-attn)偶发 504 拖垮整个作业（venv 已建好时强烈建议设 1）。
           "UV_NO_SYNC",

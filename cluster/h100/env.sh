@@ -1,24 +1,20 @@
-# GB10 / DGX Spark 集群环境（实测跑通的配置）。
-# 被 start_ray_head.sh / start_ray_worker.sh / 各实验 run.sh 统一 source——
-# 一处修改，Ray 启动与训练启动都生效。网卡名 / HCA 按你机器实际填。
+# 单机 1× H100 (80GB) 环境。被实验 run.sh（及可选的 start_ray_head.sh）统一 source。
+# 单机单卡没有跨节点通信，故不配 RoCE/IB/多网卡那一套——
+# 那是 gb10-spark/env.sh（2 节点）才需要的；在单机上指定网卡名只会误绑不存在的接口。
 
-# --- 网络 / NCCL（跨节点通信，RoCE） ---
-export NCCL_SOCKET_IFNAME=enp1s0f0np0   # 有固定 IP 的管理/数据网卡（NCCL socket 用）
-export GLOO_SOCKET_IFNAME=enP7s7        # gloo 用的网卡
-export NCCL_IB_HCA=rocep1s0f0           # RoCE HCA
-export NCCL_IB_GID_INDEX=3              # RoCE v2 必备
-export NCCL_IB_DISABLE=0                # 开启 IB/RoCE（=1 则纯 socket）
-export NCCL_NET_GDR_LEVEL=PHB           # GPUDirect RDMA 级别
-export NCCL_P2P_DISABLE=1               # 绕开跨机 P2P / CUDA IPC
-export CUDA_DISABLE_P2P=1
+# --- PyTorch 显存分配：H100 80GB 开 expandable_segments 抗碎片 ---
+# RL 的 rollout 长度可变、生成与训练交替占显存，碎片化是 OOM 主因；
+# expandable_segments 比固定 max_split_size 更省，长序列/多轮更稳。
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# --- 调试 / 并发 ---
-export NCCL_DEBUG=WARN
+# --- Megatron 推荐：固定单条 CUDA 流连接，保证 kernel 顺序与数值可复现 ---
+# 单卡 TP=1 时无 TP 通信，留着无害；NeMo/Megatron 容器默认即此值。
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
-# --- Ray 内存监控（OOM killer 阈值，在 ray start 处生效） ---
-export RAY_memory_usage_threshold=0.99
+# --- Ray 本地实例内存监控（单机 host RAM 足够时放宽，避免训练进程被 OOM killer 误杀）---
+export RAY_memory_usage_threshold=0.95
 export RAY_memory_monitor_refresh_ms=2000
 
-# --- PyTorch 显存分配（缓解碎片，训练时生效） ---
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.8
+# --- NCCL：单卡通信平凡，只留日志级别 ---
+# 不要设 NCCL_SOCKET_IFNAME / NCCL_IB_* —— 单机会因网卡名不匹配而初始化失败。
+export NCCL_DEBUG=WARN

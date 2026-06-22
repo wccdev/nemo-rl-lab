@@ -4,17 +4,22 @@ NeMo-RL 0.6.0 的集群设置（`cluster.num_nodes`、`cluster.gpus_per_node`）
 
 每个 profile 一个子目录，核心是 `overrides.conf`（每行一个 `key=value`，`#` 为注释）：
 
+- `h100/` — 单机 1× H100 80GB（单节点单卡，本机直跑）
 - `gb10-spark/` — 2× DGX Spark GB10（Ray 2 节点）
-- `h200/` — H200（后续使用）
+- `b300/` — B300（后续使用）
 
 ## 用法
 
 实验的 `run.sh` 通过环境变量选 profile，自动把对应 `overrides.conf` 追加到训练命令：
 
 ```bash
+CLUSTER_PROFILE=h100       bash run.sh   # 单机单卡
 CLUSTER_PROFILE=gb10-spark bash run.sh
-CLUSTER_PROFILE=h200       bash run.sh
 ```
+
+> 远程 `lab submit` 提交时 profile 由 `submit.env` 的 `DEFAULT_CLUSTER_PROFILE` 决定。
+> 单机 H100 平台直接用现成模板：`cp cluster/submit.env.h100.example cluster/submit.env`，改 IP + `RUN_USER` 即可。
+> 多人共用同一集群时设 `RUN_USER`，产物会隔离到 `OUTPUT_ROOT/<RUN_USER>/<实验名>`，互不覆盖。
 
 等价于：
 

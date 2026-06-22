@@ -8,12 +8,38 @@
 
 横跨多个基础模型（如 `qwen3.5-4b`、`qwen3.5-9b` 等）× 多个数据集。所有训练日志统一上传到云端 **SwanLab**。
 
+> **本项目的初衷**：拿到仓库、配好远程机器，就能直接开跑微调——环境/分布式/提交这些脏活都内化掉，
+> 你只需要关注**调参本身**（学习率、KL、采样数、数据、奖励）。
+
+## 最快上手（3 步开跑）
+
+> 训练跑在远程 H100 容器里，你只在自己机器上提交、看结果，全程不进容器、本机无需 GPU。
+
+```bash
+# 1) 装本机 CLI（只是提交客户端，无需 GPU）+ 填一次集群地址
+uv sync --extra submit
+cp cluster/submit.env.h100.example cluster/submit.env   # 改两处：机器 VPN IP、RUN_USER
+
+# 2) 选实验、按需调参：打开 experiments/<exp>/config.yaml 顶部「调参速查」改几行
+lab ls                                          # 看现成实验
+lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1  # 或 fork 一个来调参（自动改 SwanLab 名）
+
+# 3) 准备数据（随作业上传）→ 提交 → 看结果
+lab prepare gsm8k
+lab submit grpo_qwen3.5-4b_gsm8k_v1
+lab job logs <job_id> -f                        # 实时日志
+lab web                                         # 本地面板：reward 曲线 + 验证对话
+```
+
+每个实验「调什么 / 数据 / 奖励 / 怎么跑」见其目录下 `README.md`；远程提交完整细节见 [`docs/remote-submit.md`](docs/remote-submit.md)。
+
 ## 硬件
 
 | Profile | 说明 | 配置目录 |
 | --- | --- | --- |
+| `h100` | 单机 1× NVIDIA H100 80GB（单节点单卡，远程微调平台主力） | `cluster/h100/` |
 | `gb10-spark` | 2× NVIDIA DGX Spark（GB10 Grace-Blackwell），通过 Ray 组成 2 节点集群 | `cluster/gb10-spark/` |
-| `h200` | NVIDIA H200（后续使用），SFT / GRPO 均会涉及 | `cluster/h200/` |
+| `b300` | NVIDIA B300（后续使用） | `cluster/b300/` |
 
 训练配置与硬件解耦：NeMo-RL 0.6.0 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`，切换硬件只换 profile。
 
@@ -36,8 +62,9 @@ nemo-rl-lab/
 ├── env/                      # 环境与依赖说明
 │   └── README.md
 ├── cluster/                  # 硬件 / 分布式 profile（与训练解耦）
+│   ├── h100/                 # 单机 1× H100（远程微调平台主力）
 │   ├── gb10-spark/           # 2× DGX Spark GB10
-│   └── h200/                 # H200
+│   └── b300/                 # B300（后续）
 ├── configs/                  # 配置继承体系（NeMo-RL 原生 defaults）
 │   ├── base/                 # 祖父：官方 v0.6.0 example 原样副本（勿手改）
 │   └── models/               # 父：各基础模型公共片段（qwen3.5-4b / 9b ...）
@@ -126,13 +153,18 @@ uv run lab --show-completion         # 只打印脚本，自行决定放哪
 ## 新建一个实验（细节）
 
 ```bash
+# 方式一：从空白模板新建
 uv run lab new grpo_qwen3.5-4b_gsm8k_v1   # 或 bash scripts/new_experiment.sh experiments <name>
-cd experiments/grpo_qwen3.5-4b_gsm8k_v1
-# 1. 改 README.md：目标 / 基础模型 / 数据集 / SwanLab 项目名
-# 2. 改 config.yaml：选 defaults（基底 + 模型片段），写本实验差异（lr/kl/数据集/swanlab）
-# 3. 若是 SFT/Agent，在 run.sh 顶部把 ENTRY 改成对应入口（见 configs/README.md）
-# 4. 提交到集群（推荐）或在集群容器内直接跑：
-uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
+
+# 方式二（推荐调参）：fork 一个现成实验，只改超参试不同配置
+uv run lab new grpo_qwen3.5-4b_gsm8k_lr1e4 --from grpo_qwen3.5-4b_gsm8k_v1
+#   自动 copy 目录，并把 config.yaml 的 swanlab project/name 改成新实验名（避免日志撞车）
+
+cd experiments/<新实验名>
+# 1. 改 config.yaml 顶部「调参区」：lr / kl / 采样数 / 数据集 / seq
+# 2. （新建空白时）改 README.md 与 defaults；若是 SFT/Agent，run.sh 顶部改 ENTRY（见 configs/README.md）
+# 3. 提交：
+uv run lab submit <新实验名>
 ```
 
 ## 示例实验（覆盖三种方法）

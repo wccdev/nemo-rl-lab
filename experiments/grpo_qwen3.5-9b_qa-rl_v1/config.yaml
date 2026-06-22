@@ -13,6 +13,19 @@ defaults:
   - ../../configs/base/grpo_lora.yaml       # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
   - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
+# ══════════════════════════════════════════════════════════════════════════
+#  调参速查 —— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
+#  ⚠️ 这是对比实验 baseline：batch/seq/模型/裁判须与 qa-rl-agent_v1 严格一致，否则破坏对比。
+# ──────────────────────────────────────────────────────────────────────────
+#  lr / dim / alpha                       默认来自 grpo_lora 基底(lr 1e-4 / dim8 / alpha16)
+#  reference_policy_kl_penalty (loss_fn)  贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏/退化
+#  num_generations_per_prompt (grpo)      每题采样数（组内基线）。多→梯度稳但更慢更吃显存
+#  max_total_sequence_length (policy)     上下文长度（多选题带选项较长，勿降，降会截断答案）
+#  env.qa.cfg.use_judge                   简答题是否用裁判 LLM（需 JUDGE_* 环境变量）
+#  max_num_steps / val_period (grpo)      训多久 / 多久验证一次
+# ══════════════════════════════════════════════════════════════════════════
+
+# ───────────────────────────── ① 调参区（按需改）─────────────────────────────
 policy:
   # 用已完整缓存的 base 模型（与 agent 实验一致；instruct 版集群没下全会卡在下载）。
   # ⚠️ 对比实验二必须用同一个模型，改这里也要同步改 qa-rl-agent_v1。
@@ -45,8 +58,9 @@ grpo:
   val_batch_size: 64                   # <= max_val_samples
 
 loss_fn:
-  reference_policy_kl_penalty: 0.01
+  reference_policy_kl_penalty: 0.01 # 贴原模型力度；0=纯追奖励易退化，过大学不动
 
+# ────────────────────────── ② 一般不动（数据 / 判分环境 / 日志）──────────────────────────
 # run.py 读取以下键自建数据集（不走 ResponseDataset）。
 # 数据目录优先用环境变量 QA_RL_DATA_DIR，其次用这里的 data_dir。
 data:

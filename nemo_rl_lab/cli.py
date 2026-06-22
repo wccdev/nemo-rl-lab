@@ -11,6 +11,7 @@
 常用：
     uv run lab ls                                  列出实验 / 项目
     uv run lab new grpo_qwen3.5-4b_gsm8k_v1        从模板新建实验
+    uv run lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1   fork 现成实验来调参
     uv run lab prepare gsm8k                       预处理数据集
     uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   从本机提交作业到 Ray 集群
     uv run lab job list                            查看集群上的作业（地址取 submit.env）
@@ -157,12 +158,19 @@ def ls() -> None:
             typer.echo(f"  - {e}")
 
 
-@app.command(help="从模板新建实验")
+@app.command(help="新建实验：默认从空白模板；--from 则 fork 现成实验（自动改 SwanLab/README 名）")
 def new(
-    name: str = typer.Argument(..., help="实验名（见 docs/naming-convention.md）"),
+    name: str = typer.Argument(..., help="新实验名（见 docs/naming-convention.md）"),
+    from_exp: Optional[str] = typer.Option(
+        None, "--from", autocompletion=_complete_exp,
+        help="从此现成实验 fork：copy 目录 + 把 config.yaml 的 swanlab project/name 与 README 标题改成新名",
+    ),
     kind: Kind = typer.Option(Kind.experiments, "--kind", help="放到 experiments 还是 projects"),
 ) -> None:
-    raise typer.Exit(_run(["bash", str(SCRIPTS / "new_experiment.sh"), kind.value, name]))
+    cmd = ["bash", str(SCRIPTS / "new_experiment.sh"), kind.value, name]
+    if from_exp:
+        cmd.append(_resolve_exp(from_exp))
+    raise typer.Exit(_run(cmd))
 
 
 @app.command(
