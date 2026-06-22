@@ -19,20 +19,21 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  # 多轮 + 检索结果回灌比单轮长很多：原题面 + 多次检索片段 + 作答。给到 2048。
-  # ⚠️ GB10 统一内存(~122GB)对 9B 偏紧，agent 实验实测 seq=2048 长跑会 host RAM OOM。
-  #    若 OOM，按顺序降：env.qa_kb.cfg.max_turns→3、qa_kb_agent_env._KB_MAX_CHARS→500、
-  #    seq→1792/1536、train_global_batch_size→16 且 num_generations_per_prompt→4。
-  max_total_sequence_length: 2048
-  train_global_batch_size: 32          # = num_prompts_per_step * num_generations_per_prompt（4×8），与 baseline 一致
-  generation_batch_size: 16
+  # ⚠️ 与 baseline 完全相同的 1536：baseline 实测 1536 都会在 ~step280 被 Ray(host RAM) OOM；
+  #    agent 多轮每步堆更多 rollout 进内存，2048 必崩且崩更早。故 seq 也对齐 1536——
+  #    既最省内存，又让两实验唯一变量就是「多轮+检索」，对比最干净。
+  #    为塞进 1536 不截断：已把 max_turns 收到 3、KB_MAX_CHARS 收到 500（见下 / submit.env）。
+  #    仍 OOM 再降：env.qa_kb.cfg.max_turns→2、KB_MAX_CHARS→400、seq→1280（batch 已最低，勿动）。
+  max_total_sequence_length: 1536
+  train_global_batch_size: 16          # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
+  generation_batch_size: 8
   generation:
     max_new_tokens: 512                # 每轮生成上限：一次检索查询很短，作答留足空间
 
 grpo:
   num_prompts_per_step: 4              # 与 baseline 一致
-  num_generations_per_prompt: 8        # 与 baseline 一致
-  max_rollout_turns: 4                 # 多轮：最多 4 轮（典型 1~2 次检索 + 作答）
+  num_generations_per_prompt: 4        # 与 baseline 严格一致（baseline 因 GB10 OOM 降到了 4）
+  max_rollout_turns: 3                 # 多轮：最多 3 轮（典型 1 次检索 + 作答）；收紧以省内存、塞进 1536
   max_num_steps: 300                   # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
   val_period: 50
   val_at_start: true
@@ -59,14 +60,14 @@ env:
       # true：简答题最终答案用裁判 LLM（需 JUDGE_* 环境变量；连不上自动回退关键词覆盖率）
       # false：全部走规则判分，零成本、无需裁判端点。与 baseline 必须一致才公平。
       use_judge: true
-      max_turns: 4                     # 与 grpo.max_rollout_turns 对齐
+      max_turns: 3                     # 与 grpo.max_rollout_turns 对齐
 
 logger:
   wandb_enabled: false
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
-  num_val_samples_to_print: 3          # 每次验证把 3 条完整多轮对话(含检索)打印到作业日志
+  num_val_samples_to_print: 16         # 每次验证把 16 条完整多轮对话(含检索)打印到作业日志；Web 面板分页查看
   swanlab:
     project: "qa-rl-compare"           # 与实验一同 project，便于同图对比两条曲线
     name: "treatment-multiturn-kb"

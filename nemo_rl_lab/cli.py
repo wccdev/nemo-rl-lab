@@ -16,6 +16,7 @@
     uv run lab job list                            查看集群上的作业（地址取 submit.env）
     uv run lab job logs <job_id> -f                实时看作业日志
     uv run lab job stop <job_id>                   停止作业
+    uv run lab web                                 本地 Web 面板：reward 曲线 + 验证对话
     uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   在集群容器内直接跑
     uv run lab ray head                            启动 Ray head（在 head 节点容器内）
     uv run lab sync-base --nemo-rl /opt/NeMo-RL    同步官方基底配置
@@ -260,6 +261,22 @@ job_app = typer.Typer(
 app.add_typer(job_app, name="job")
 
 _ADDR_OPT = typer.Option(None, "--address", "-a", help="Ray dashboard 地址（默认取 submit.env）")
+
+
+@app.command(help="启动本地 Web 面板：看训练 reward 曲线 + 验证对话（数据取自 Ray 日志，纯本地只读）")
+def web(
+    port: int = typer.Option(8080, "--port", "-p", help="本地服务端口"),
+    address: Optional[str] = _ADDR_OPT,
+    no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
+) -> None:
+    # 取数走 ray JobSubmissionClient（同 lab job samples）→ --extra submit；
+    # HTTP 服务用 FastAPI + uvicorn → --extra web。一条命令即起。
+    cmd = ["uv", "run", "--extra", "submit", "--extra", "web",
+           "python", str(SCRIPTS / "web_dashboard.py"),
+           "--address", _ray_address(address), "--port", str(port)]
+    if not no_open:
+        cmd.append("--open")
+    raise typer.Exit(_run(cmd))
 
 
 @job_app.command("list", help="列出集群作业（精简表格）")

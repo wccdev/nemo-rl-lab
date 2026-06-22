@@ -39,21 +39,32 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 
-# ============================ 知识库检索工具 ============================
-# 外部知识库检索端点（OpenAI 风格的可选鉴权）。知识库就绪后按你的 API 调整 kb_search()。
+# ============================ 知识库检索工具（RAGFlow）============================
+# 接入自建 RAGFlow 知识库的检索接口 `POST {KB_BASE_URL}/api/v1/retrieval`。
+#   KB_BASE_URL      RAGFlow 服务地址（不含 /api/...），如 http://192.168.1.x:9380。空=未接入（返回占位提示）。
+#   KB_API_KEY       RAGFlow 的 API Key（页面右上「API」里生成，形如 ragflow-xxx）。
+#   KB_DATASET_IDS   要检索的知识库(dataset)ID，逗号分隔（页面知识库列表 / List datasets API 可取）。必填。
+#   KB_TOP_K         返回命中片段条数（映射到 RAGFlow 的 page_size）。
+#   KB_TIMEOUT       单次检索超时（秒）。
+#   KB_SIMILARITY_THRESHOLD  相似度下限，过滤弱命中（默认 0.2，与 RAGFlow 默认一致）。
+# ⚠️ 检索发生在【集群训练进程】（Ray actor）里，所以 KB_BASE_URL 要从【集群容器】能访问到（Mac 不一定通）。
 KB_BASE_URL = os.environ.get("KB_BASE_URL", "")          # 空 = 知识库未接入（返回占位提示）
 KB_API_KEY = os.environ.get("KB_API_KEY", "EMPTY")
+KB_DATASET_IDS = [s.strip() for s in os.environ.get("KB_DATASET_IDS", "").split(",") if s.strip()]
 KB_TOP_K = int(os.environ.get("KB_TOP_K", "3"))
 KB_TIMEOUT = float(os.environ.get("KB_TIMEOUT", "15"))
-_KB_MAX_CHARS = 800                                       # 回灌片段总长上限，避免撑爆上下文
+KB_SIMILARITY_THRESHOLD = float(os.environ.get("KB_SIMILARITY_THRESHOLD", "0.2"))
+# 回灌片段总长上限（字符），避免撑爆上下文 / 拉高 host RAM。GB10 上 seq=1536 多轮时建议 ~500。
+_KB_MAX_CHARS = int(os.environ.get("KB_MAX_CHARS", "500"))
 
 
 def kb_search(query: str) -> str:
-    """检索外部知识库，返回拼好的命中片段文本（失败/未接入时返回提示，不抛异常）。
+    """检索 RAGFlow 知识库，返回拼好的命中片段文本（失败/未接入时返回提示，不抛异常）。
 
-    ⚠️ 默认假设知识库提供一个 `POST {KB_BASE_URL}/search`、
-       请求体 {"query": ..., "top_k": ...}、响应 {"results": [{"text": ...}, ...]} 的接口。
-       你的知识库 API 不同就改这里（请求/响应解析两处）。
+    RAGFlow 检索 API（POST {KB_BASE_URL}/api/v1/retrieval）：
+      请求体 {"question","dataset_ids","page_size","similarity_threshold"}
+      响应   {"code":0,"data":{"chunks":[{"content","similarity",...}], ...}}
+    换别的知识库就改下面「请求体」和「响应解析」两处。
     """
     query = (query or "").strip()
     if not query:
@@ -61,10 +72,18 @@ def kb_search(query: str) -> str:
     if not KB_BASE_URL:
         # 知识库搭建中：给个明确占位，训练流水线照常跑（模型只是拿不到真实资料）。
         return "（知识库未接入：KB_BASE_URL 未配置，无法检索。请联系管理员配置后重试。）"
+    if not KB_DATASET_IDS:
+        return "（知识库未接入：KB_DATASET_IDS 未配置，不知道检索哪个知识库。）"
 
-    body = json.dumps({"query": query, "top_k": KB_TOP_K}).encode("utf-8")
+    # —— 请求体（RAGFlow 格式）——
+    body = json.dumps({
+        "question": query,
+        "dataset_ids": KB_DATASET_IDS,
+        "page_size": KB_TOP_K,                # RAGFlow 用 page_size 控制返回片段数
+        "similarity_threshold": KB_SIMILARITY_THRESHOLD,
+    }).encode("utf-8")
     req = urllib.request.Request(
-        f"{KB_BASE_URL.rstrip('/')}/search",
+        f"{KB_BASE_URL.rstrip('/')}/api/v1/retrieval",
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -77,10 +96,13 @@ def kb_search(query: str) -> str:
     except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError) as e:
         return f"search 错误: 检索失败（{type(e).__name__}）"
 
-    results = data.get("results") or data.get("data") or []
+    # —— 响应解析（RAGFlow 格式）——
+    if data.get("code", 0) != 0:
+        return f"search 错误: 知识库返回 {data.get('message', data.get('code'))}"
+    chunks = (data.get("data") or {}).get("chunks") or []
     passages: list[str] = []
-    for r in results[:KB_TOP_K]:
-        text = r.get("text") or r.get("content") or r.get("chunk") or ""
+    for c in chunks[:KB_TOP_K]:
+        text = c.get("content") or c.get("content_ltks") or ""
         if text:
             passages.append(str(text).strip())
     if not passages:

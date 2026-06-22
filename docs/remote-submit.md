@@ -195,9 +195,18 @@ SwanLab 只有**指标曲线**，不含模型实际输出的 token。
 `train/avg_turns_per_sample`（平均轮数）。
 > ⚠️ 自定义环境 `global_post_process_and_metrics` 返回的指标（如 `tool_agent_success_rate`）在当前 NeMo-RL 的 GRPO 流程里**不会被记录**，别去 SwanLab 找它，用上面的 `validation/accuracy` 即可。
 
-**再看具体生成内容（含工具调用）**，有三种方式：
+**再看具体生成内容（含工具调用）**，有四种方式：
 
-1. **本地抽取验证轨迹**（Mac 上最方便，无需登集群）：
+0. **本地 Web 面板**（最直观，一条命令）：
+   ```bash
+   lab web                 # 起本地服务并自动开浏览器（数据取自 dashboard 日志，纯本地只读）
+   lab web --port 9000     # 自定端口；--no-open 不自动开浏览器
+   ```
+   两个视图：
+   - **对比总览**（默认）：点选 2~4 个作业，一眼看「基线 → 最终」准确率与进步/退步——含结论 banner（谁最终最高、相差多少 pp）、每实验 KPI 卡（最终准确率大数字 + Δpp 徽章）、多实验**验证准确率轨迹**叠加曲线（核心指标）、训练 Reward 叠加曲线、关键指标明细表（基线/最终/ΔAcc/Δreward）。点任意 KPI 卡或表格行可下钻。
+   - **作业详情**：单作业的 reward 曲线 + 验证准确率、每次验证的完整对话（`<think>`/`<tool_call>`/`\boxed{}` 高亮、reward 彩色徽章、含完整 model response），按页「加载更多」。
+   默认 15s 自动刷新。对话条数由 `logger.num_val_samples_to_print` 决定（qa 实验已调到 16）。服务用 FastAPI + uvicorn（`uv` 的 `web` extra，`lab web` 自动启用），API 文档在 `/api/docs`。无需数据库、无需在集群起服务。
+1. **本地抽取验证轨迹**（命令行，无需登集群）：
    ```bash
    lab job samples <job_id>            # 全部验证的样本面板
    lab job samples <job_id> --last 1   # 只看最近一次验证

@@ -48,7 +48,8 @@ for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSF
           "UV_NO_SYNC",
           # 简答题裁判 LLM（qa-rl / qa-rl-agent）；外部知识库检索（qa-rl-agent）。
           "JUDGE_BASE_URL", "JUDGE_MODEL", "JUDGE_API_KEY", "JUDGE_CONCURRENCY", "JUDGE_TIMEOUT",
-          "KB_BASE_URL", "KB_API_KEY", "KB_TOP_K", "KB_TIMEOUT"):
+          "KB_BASE_URL", "KB_API_KEY", "KB_DATASET_IDS", "KB_TOP_K", "KB_TIMEOUT",
+          "KB_SIMILARITY_THRESHOLD", "KB_MAX_CHARS"):
     v = os.environ.get(k)
     if v:
         env_vars[k] = v

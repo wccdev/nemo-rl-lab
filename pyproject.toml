@@ -13,6 +13,9 @@ dependencies = [
 # 仅是「客户端」，不含 GPU/训练栈；版本对齐 NeMo-RL 0.6.0 的 ray[default]==2.54.0，
 # 避免与集群 Ray 协议不兼容。安装：uv sync --extra submit
 submit = ["ray[default]==2.54.0"]
+# 本地训练面板 lab web 的 HTTP 服务（FastAPI + uvicorn）。取数仍走 submit extra 的 ray，
+# 故 lab web 同时启用 submit + web 两个 extra。安装：uv sync --extra submit --extra web
+web = ["fastapi>=0.110", "uvicorn>=0.29", "pyyaml>=6"]
 
 [project.scripts]
 # 安装后提供 `lab` 命令；`uv run lab ...` 直接可用，仓库根的 ./lab 是它的薄 shim。
