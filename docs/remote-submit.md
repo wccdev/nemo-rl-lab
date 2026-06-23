@@ -230,8 +230,8 @@ SwanLab 只有**指标曲线**，不含模型实际输出的 token。
 
 0. **NeMo-RL Lab Console**（推荐）：
    ```bash
-   pnpm -C web build              # 首次或前端改动后
-   lab web                        # 本机默认免登；团队部署加 --auth --serve
+   pnpm -C web build              # 可选；lab web 会自动构建
+   lab web                        # 本机默认免登；缺 dist 或 src 改动时自动 pnpm build
    lab web --no-open --port 8080  # 开发时配合 pnpm -C web dev（:5173 代理 /api）
    ```
    功能：概览(GPU+台账)、作业详情(ECharts 曲线+验证样本)、多实验对比、实验列表、登录(团队模式)。

@@ -42,8 +42,7 @@ def main() -> None:
     print(f"✓ NeMo-RL Lab Console: {url}")
     print(f"  Ray: {args.address} | auth={'off (--no-auth)' if args.no_auth else 'on'}")
     if not static.is_dir():
-        print("  ⚠ 前端未构建：在 web/ 目录运行 pnpm install && pnpm build")
-        print("    开发模式：pnpm dev（Vite 代理 /api → 本服务）")
+        print("  ⚠ 无前端静态资源（lab web 请加 --no-build 跳过构建时会出现）")
     if args.open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=settings.host, port=settings.port, log_level="warning")

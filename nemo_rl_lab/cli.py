@@ -1082,7 +1082,7 @@ job_app = typer.Typer(
 app.add_typer(job_app, name="job")
 
 
-@app.command(help="NeMo-RL Lab Console：微调 Web 控制台（React + FastAPI；需先 pnpm -C web build 或 dev 联调）")
+@app.command(help="NeMo-RL Lab Console：微调 Web 控制台（缺 dist 或源码更新时自动 pnpm build）")
 def web(
     port: int = typer.Option(8080, "--port", "-p", help="本地服务端口"),
     address: Optional[str] = _ADDR_OPT,
@@ -1090,7 +1090,19 @@ def web(
     no_auth: bool = typer.Option(True, "--no-auth/--auth", help="本机默认免登录；团队部署用 --auth"),
     serve: bool = typer.Option(False, "--serve", help="绑定 0.0.0.0（团队内网部署）"),
     no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
+    no_build: bool = typer.Option(False, "--no-build", help="跳过自动构建（配合 pnpm dev 联调时用）"),
 ) -> None:
+    from nemo_rl_lab.web.frontend_build import ensure_frontend_built
+
+    try:
+        ensure_frontend_built(ROOT, skip=no_build)
+    except subprocess.CalledProcessError:
+        typer.secho("前端构建失败（pnpm 退出非 0）。", fg=typer.colors.RED)
+        raise typer.Exit(1) from None
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1) from None
+
     cmd = [
         "uv", "run", "--extra", "submit", "--extra", "web",
         "python", "-m", "nemo_rl_lab.web.server",
@@ -1101,16 +1113,8 @@ def web(
         cmd.append("--no-auth")
     if serve:
         cmd.append("--serve")
-    if no_open:
-        pass
-    else:
+    if not no_open:
         cmd.append("--open")
-    dist = ROOT / "web" / "dist"
-    if not dist.is_dir():
-        typer.secho(
-            "提示：前端未构建。开发联调：终端1 `uv run lab web --no-open`，终端2 `pnpm -C web dev`（Vite :5173 代理 /api）",
-            fg=typer.colors.YELLOW,
-        )
     raise typer.Exit(_run(cmd))
 
 
