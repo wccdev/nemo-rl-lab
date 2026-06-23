@@ -117,14 +117,33 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 所有操作都通过 `lab` 入口（[Typer](https://typer.tiangolo.com) 实现，项目正式命令入口）：
 
 ```bash
+uv run lab init                              # 交互式引导首次配置两层 submit.env（替代手动 cp + 编辑）
 uv run lab ls                                # 列出实验 / 项目
-uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --cluster h100   # 从模板新建实验（绑定目标集群）
+uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --method grpo --cluster h100   # 从骨架新建实验（grpo|sft|agent）
+uv run lab diff grpo_qwen3.5-4b_gsm8k_v1 grpo_qwen3.5-9b_gsm8k_v1      # 对比两实验有效 config 差异（fork 调参常用）
 uv run lab prepare gsm8k                     # 预处理数据集（gsm8k / alpaca / qa_rl）
-uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（执行在集群）
+uv run lab doctor                            # 体检提交环境：配置填全 / 能否连上集群 / Ray 版本对齐
+uv run lab tunnel                            # 不同网段时：开 SSH 隧道把 dashboard:8265 / GCS:6379 转发到本机
+uv run lab cluster up                        # 远程起 Ray（ssh + docker exec head/worker；区别于容器内 lab ray）
+uv run lab status                            # 集群一览：空闲 GPU + 我的活跃作业（submit 前预检，别撞满卡）
+uv run lab validate grpo_qwen3.5-4b_gsm8k_v1 # 提交前静态校验 config（本地秒级，省得跑到集群才报错）
+uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   # 从本机提交作业到 Ray 集群（提交前自动校验）
+uv run lab logs                              # 跟随最近一个作业日志（= lab job logs 便捷版）
+uv run lab export grpo_qwen3.5-9b_gsm8k_v1   # 训练后：把 checkpoint 转 HF（自适应 dcp/megatron），可 --push-repo 推 Hub
+uv run lab eval grpo_qwen3.5-9b_gsm8k_v1     # 训练后：对 checkpoint 跑独立评测（未给 --model 时先自动导出）
+uv run lab runs --status                     # 本地提交台账（commit/config 指纹/run_id）并关联集群作业状态（这次跑成没）
+uv run lab job cancel-all                    # 停止所有运行中/等待中作业（clean 只删终态记录、不停运行）
 uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   # 在集群容器内直接跑
 uv run lab ray head                          # 启动 Ray head（在 head 节点容器内）
 uv run lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底配置
 ```
+
+> 首次使用：`uv run lab init` 交互式填好两层 submit.env（密钥只写本地、已 .gitignore），再 `uv run lab doctor` 确认能连上、版本对齐，然后 `lab submit`。
+> 不同网段连不上 8265/6379 时用 `lab tunnel` 开隧道；2 机集群可用 `lab cluster up` 远程起 Ray（需在集群层 submit.env 配 CLUSTER_SSH_* / CLUSTER_CONTAINER / CLUSTER_REPO_DIR）。
+> 每次 `lab submit` 会自动：① 校验 config（batch 三者相等等，不过不放行，可 `--no-validate` 跳过）；
+> ② 记录 git commit / dirty / config 指纹到作业日志 + 本地 `.lab/runs.jsonl`，并把 `run_id` 写进 Ray 作业 metadata。
+> 事后 `lab runs --status` 即可把台账 `run_id` 对上集群作业状态（RUNNING/SUCCEEDED/FAILED…），一屏看「这次提交跑成没」；
+> `lab status` 则在提交前看整集群空闲 GPU 与自己的活跃作业，避免撞满卡。
 
 三种等价调用方式：
 
@@ -203,6 +222,30 @@ uv run lab job stop <job_id>        # 停止作业
 ```
 
 > 完整步骤、网络/SSH 隧道、上传规则、监控、排错 → **[`docs/remote-submit.md`](docs/remote-submit.md)**。
+
+## 训练后闭环（导出 / 评测）
+
+训练产物（checkpoint）落在集群 `OUTPUT_ROOT[/<RUN_USER>]/<实验名>/step_<N>/`。两条命令把它变成「可交付资产」，
+执行同样在集群（薄封装 NeMo-RL 0.6.0 官方脚本，从 Mac 提交、不进容器）：
+
+```bash
+# 导出：DCP/Megatron checkpoint → HuggingFace 格式（按后端自适应选转换器，自动带上 tokenizer）
+uv run lab export grpo_qwen3.5-9b_gsm8k_v1                 # 默认最新 step；产物落 <ckpt>/hf_export/step_<N>
+uv run lab export grpo_qwen3.5-9b_gsm8k_v1 --step 170 --push-repo myorg/qwen-gsm8k   # 指定步数并推到 HF Hub
+uv run lab export grpo_qwen3.5-9b_gsm8k_v1 --dry-run       # 只打印将执行的转换命令，不提交
+
+# 评测：对 checkpoint 跑 run_eval.py（仅吃 HF 格式；未给 --model 时先自动导出再评测）
+uv run lab eval grpo_qwen3.5-9b_gsm8k_v1                                  # 默认 eval 配置
+uv run lab eval grpo_qwen3.5-9b_gsm8k_v1 --eval-config examples/configs/evals/math_eval.yaml \
+    -- generation.temperature=0.6 generation.top_p=0.95                  # `--` 之后透传给 run_eval.py
+uv run lab eval grpo_qwen3.5-9b_gsm8k_v1 --model myorg/qwen-gsm8k         # 直接评测某 HF 模型/Hub id
+```
+
+- **后端自适应**：GRPO（Megatron 后端）走 `convert_megatron_to_hf.py`（`--extra mcore`），SFT（DTensor）走 `convert_dcp_to_hf.py`。
+  脚本按 checkpoint 里是否存在 `policy/weights/iter_*` 自动判别，无需手选。
+- **step 选择**：默认取最新 `step_<N>`；`--step N` 指定。
+- **导出/评测也记台账**：与 `submit` 共用 `.lab/runs.jsonl`，记录 action/run_id/commit，可追溯。
+- 集群侧细节见 [`scripts/post_train.sh`](scripts/post_train.sh)（可在 head 容器内直跑，支持 `LAB_DRY_RUN=1`）。
 
 ## 快速开始
 

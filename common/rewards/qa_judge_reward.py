@@ -103,7 +103,7 @@ def qa_judge_reward_fn(queries, completions, expected_answers, **kwargs):
     rewards: list[float | None] = [None] * n
     judge_jobs: list[tuple[int, str]] = []  # (idx, judge_prompt)
 
-    for i, (q, comp, exp) in enumerate(zip(queries, completions, expected_answers)):
+    for i, (q, comp, exp) in enumerate(zip(queries, completions, expected_answers, strict=False)):
         if not str(exp).lstrip().startswith("[short]"):
             rewards[i] = qa_reward._grade_one(exp, comp, groups)
             continue
@@ -116,7 +116,7 @@ def qa_judge_reward_fn(queries, completions, expected_answers, **kwargs):
     if judge_jobs:
         with ThreadPoolExecutor(max_workers=JUDGE_CONCURRENCY) as ex:
             scores = list(ex.map(lambda job: _call_judge(job[1]), judge_jobs))
-        for (i, _), s in zip(judge_jobs, scores):
+        for (i, _), s in zip(judge_jobs, scores, strict=False):
             rewards[i] = s if s is not None else qa_reward._grade_one(
                 expected_answers[i], completions[i], groups)  # 回退
 

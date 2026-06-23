@@ -42,41 +42,87 @@ fi
 [[ -d "${REPO_ROOT}/${EXP_REL}" ]] || { echo "找不到实验目录: ${EXP_REL}"; exit 1; }
 [[ -f "${REPO_ROOT}/${EXP_REL}/run.sh" ]] || { echo "实验缺少 run.sh: ${EXP_REL}"; exit 1; }
 
+# ---------- 可复现元数据：git commit / dirty / config 指纹 / run id ----------
+# 提交时固定「这次运行对应哪版代码、哪版 config」，随作业注入并落到日志 + 本地台账，事后可追溯。
+GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then GIT_DIRTY=1; else GIT_DIRTY=0; fi
+CONFIG_FILE="${REPO_ROOT}/${EXP_REL}/config.yaml"
+if [[ -f "${CONFIG_FILE}" ]]; then
+  CONFIG_SHA="$({ shasum -a 256 "${CONFIG_FILE}" 2>/dev/null || sha256sum "${CONFIG_FILE}"; } | cut -c1-12)"
+else
+  CONFIG_SHA="none"
+fi
+RUN_ID="$(basename "${EXP_REL}")-$(date +%Y%m%d-%H%M%S)"
+export EXP_REL NRL_GIT_COMMIT="${GIT_COMMIT}" NRL_GIT_DIRTY="${GIT_DIRTY}" \
+       NRL_CONFIG_SHA="${CONFIG_SHA}" NRL_RUN_ID="${RUN_ID}" \
+       NRL_SUBMIT_USER="${RUN_USER:-${USER:-unknown}}"
+
+if [[ "${GIT_DIRTY}" == "1" ]]; then
+  echo "[submit] ⚠️ 工作目录有未提交改动（dirty）：上传的是当前磁盘内容，但 git commit=${GIT_COMMIT} 无法完整复现本次运行。"
+  echo "         建议先提交再 submit；若只是临时调参可忽略（已记录 dirty 标记到 .lab/runs.jsonl）。"
+fi
+
+# ---------- 密钥转发安全提示（未配置集群侧 secrets 文件时）----------
+# CLUSTER_SECRETS_FILE（容器内路径，可选）：配了它则密钥在集群侧 source、不再明文进 runtime_env。
+if [[ -z "${CLUSTER_SECRETS_FILE:-}" ]]; then
+  _has_secret=0
+  for _k in SWANLAB_API_KEY HF_TOKEN JUDGE_API_KEY KB_API_KEY; do
+    [[ -n "${!_k:-}" ]] && _has_secret=1
+  done
+  if [[ "${_has_secret}" == "1" ]]; then
+    echo "[submit] ⚠️ 安全提示：检测到密钥(SWANLAB_API_KEY/HF_TOKEN/JUDGE_API_KEY/KB_API_KEY)将随作业明文转发，"
+    echo "         会出现在 Ray Dashboard 的 job 详情(env_vars)里，同集群他人可见。"
+    echo "         多人共用集群建议：在集群侧放一份密钥文件，并在 submit.env 设 CLUSTER_SECRETS_FILE=<容器内路径>，"
+    echo "         届时 submit 仅转发该路径、不再明文转发密钥。详见 cluster/README.md §密钥。"
+  fi
+fi
+
 # 组装 runtime_env：排除大文件/密钥，转发必要环境变量给作业进程
 RUNTIME_ENV="$(python3 - <<'PY'
 import json, os
+# 非密钥配置：HF 下载配置 + 数据目录覆盖 + 一致性开关 + 裁判/检索的非密钥项（设了才转发）。
+# *_DATA_DIR 只在你想用「集群上已有的大数据」时才设（值是容器内路径）；
+# 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
+config_keys = (
+    "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
+    "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT",
+    # 多人共用平台：产物隔离到 OUTPUT_ROOT/<RUN_USER>/<实验名>（见各实验 run.sh）。
+    "RUN_USER",
+    # UV_NO_SYNC=1：让集群 run.sh 的 `uv run` 跳过 sync、直接用已装好的 venv，
+    # 避开 GitHub 直链依赖(flash-attn)偶发 504 拖垮整个作业（venv 已建好时强烈建议设 1）。
+    "UV_NO_SYNC",
+    # NeMo-RL 环境一致性开关：NRL_FORCE_REBUILD_VENVS / NRL_IGNORE_VERSION_MISMATCH。
+    "NRL_FORCE_REBUILD_VENVS", "NRL_IGNORE_VERSION_MISMATCH",
+    # 裁判 LLM / 知识库检索的【非密钥】项。
+    "JUDGE_BASE_URL", "JUDGE_MODEL", "JUDGE_CONCURRENCY", "JUDGE_TIMEOUT",
+    "KB_BASE_URL", "KB_DATASET_IDS", "KB_TOP_K", "KB_TIMEOUT",
+    "KB_SIMILARITY_THRESHOLD", "KB_MAX_CHARS",
+)
+# 可复现元数据：随作业注入，落到作业日志（_run_experiment.sh 打印）+ 本地台账。
+meta_keys = ("NRL_GIT_COMMIT", "NRL_GIT_DIRTY", "NRL_CONFIG_SHA", "NRL_RUN_ID", "NRL_SUBMIT_USER")
+# 密钥：默认明文转发（兜底，向后兼容）；配了 CLUSTER_SECRETS_FILE 则改为集群侧 source，不进 dashboard。
+secret_keys = ("SWANLAB_API_KEY", "HF_TOKEN", "JUDGE_API_KEY", "KB_API_KEY")
+
 env_vars = {
     "NEMO_RL_DIR": os.environ["NEMO_RL_DIR"],
     "CLUSTER_PROFILE": os.environ["CLUSTER_PROFILE"],
 }
-# 可选转发：密钥 + HF 下载配置 + 数据目录覆盖（在 submit.env 里设了才转发）。
-# *_DATA_DIR 只在你想用「集群上已有的大数据」时才设（值是容器内路径）；
-# 不设时各实验 run.sh 会自动指向随作业上传的 datasets/<name>。
-for k in ("SWANLAB_API_KEY", "HF_TOKEN", "HF_ENDPOINT", "HF_HUB_ENABLE_HF_TRANSFER", "HF_HOME",
-          "GSM8K_DATA_DIR", "ALPACA_DATA_DIR", "QA_RL_DATA_DIR", "OUTPUT_ROOT",
-          # 多人共用平台：产物隔离到 OUTPUT_ROOT/<RUN_USER>/<实验名>（见各实验 run.sh）。
-          "RUN_USER",
-          # UV_NO_SYNC=1：让集群 run.sh 的 `uv run` 跳过 sync、直接用已装好的 venv，
-          # 避开 GitHub 直链依赖(flash-attn)偶发 504 拖垮整个作业（venv 已建好时强烈建议设 1）。
-          "UV_NO_SYNC",
-          # NeMo-RL 环境一致性开关：容器代码/依赖与源码漂移时用。
-          #   NRL_FORCE_REBUILD_VENVS=true 强制 worker 按当前源码重建隔离 venv（修「configure_worker
-          #     返回值个数不符」之类的 driver 新/worker 旧不一致；首跑较慢，建好后删掉此项）。
-          #   NRL_IGNORE_VERSION_MISMATCH=1 仅压制告警、不修复（不推荐长期开）。
-          "NRL_FORCE_REBUILD_VENVS", "NRL_IGNORE_VERSION_MISMATCH",
-          # 简答题裁判 LLM（qa-rl / qa-rl-agent）；外部知识库检索（qa-rl-agent）。
-          "JUDGE_BASE_URL", "JUDGE_MODEL", "JUDGE_API_KEY", "JUDGE_CONCURRENCY", "JUDGE_TIMEOUT",
-          "KB_BASE_URL", "KB_API_KEY", "KB_DATASET_IDS", "KB_TOP_K", "KB_TIMEOUT",
-          "KB_SIMILARITY_THRESHOLD", "KB_MAX_CHARS"):
+keys = list(config_keys) + list(meta_keys)
+secrets_file = os.environ.get("CLUSTER_SECRETS_FILE", "").strip()
+if secrets_file:
+    env_vars["CLUSTER_SECRETS_FILE"] = secrets_file  # 集群侧 source，不明文转发密钥
+else:
+    keys += list(secret_keys)
+for k in keys:
     v = os.environ.get(k)
     if v:
         env_vars[k] = v
 print(json.dumps({
     # 上传整个仓库（含已准备好的小 jsonl，自定义环境/数据随作业分发到各节点）；
-    # 仅排除：原始/中间缓存、产物、密钥、git/pycache。
+    # 仅排除：原始/中间缓存、产物、密钥、本地台账、git/pycache。
     "excludes": [
         "datasets/**/raw/**", "datasets/**/data/**",
-        "**/outputs/**", ".git/**", "**/__pycache__/**",
+        "**/outputs/**", ".git/**", "**/__pycache__/**", ".lab/**",
         "cluster/submit.env", "cluster/*/submit.env", "cluster/secrets.env", "**/*.key",
     ],
     "env_vars": env_vars,
@@ -86,7 +132,11 @@ PY
 
 echo "[submit] 集群        : ${RAY_DASHBOARD_ADDRESS}"
 echo "[submit] 实验        : ${EXP_REL}  (profile=${CLUSTER_PROFILE})"
+echo "[submit] 版本        : git=${GIT_COMMIT}$([[ "${GIT_DIRTY}" == 1 ]] && echo '+dirty') config=${CONFIG_SHA}  run_id=${RUN_ID}"
 echo "[submit] NEMO_RL_DIR : ${NEMO_RL_DIR} (容器内)"
+if [[ -n "${CLUSTER_SECRETS_FILE:-}" ]]; then
+  echo "[submit] secrets     : 集群侧 ${CLUSTER_SECRETS_FILE}（不明文转发密钥）"
+fi
 if [[ -n "${HF_ENDPOINT:-}" ]]; then
   echo "[submit] 警告: 已设置 HF_ENDPOINT=${HF_ENDPOINT}"
   echo "         集群容器常连不上国内镜像；若训练报 OSError 连不上 mirror，请注释 submit.env 里的 HF_ENDPOINT，"
@@ -96,6 +146,31 @@ if [[ -n "${HF_HOME:-}" ]]; then
   echo "[submit] HF_HOME     : ${HF_HOME} (容器内，模型须已缓存或能访问 huggingface.co)"
 fi
 
+# ---------- 本地 run 台账（可追溯，不上传、不入库）----------
+# 每次提交追加一行 JSON：run_id/时间/用户/实验/profile/commit/dirty/config 指纹/地址。
+# 与作业日志里的 NRL_RUN_ID 对应，事后可回查「这个 SwanLab run 对应哪版代码」。
+LEDGER="${REPO_ROOT}/.lab/runs.jsonl"
+mkdir -p "$(dirname "${LEDGER}")"
+python3 - >> "${LEDGER}" <<'PY'
+import json, os, time
+print(json.dumps({
+    "run_id": os.environ["NRL_RUN_ID"],
+    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    "action": "submit",
+    "user": os.environ.get("NRL_SUBMIT_USER", "unknown"),
+    "exp": os.environ["EXP_REL"],
+    "profile": os.environ["CLUSTER_PROFILE"],
+    "git_commit": os.environ.get("NRL_GIT_COMMIT", "unknown"),
+    "git_dirty": os.environ.get("NRL_GIT_DIRTY") == "1",
+    "config_sha": os.environ.get("NRL_CONFIG_SHA", "none"),
+    "address": os.environ.get("RAY_DASHBOARD_ADDRESS", ""),
+}, ensure_ascii=False))
+PY
+
+# 作业元数据：把 run_id / 实验 / action 附到 ray job 的 metadata，便于 `lab runs --status` / `lab status`
+# 用 run_id 把本地台账与集群作业状态对上（不依赖随机 submission_id）。
+META_JSON="$(python3 -c 'import json,os; print(json.dumps({"lab_run_id":os.environ["NRL_RUN_ID"],"lab_exp":os.environ["EXP_REL"],"lab_action":"submit"}))')"
+
 cd "${REPO_ROOT}"
 # 用 uv 管理的 Ray CLI（pyproject 可选依赖 submit；版本对齐集群）。
 # uv 会按需把 submit extra 装好，无需手动 pip install ray。
@@ -103,4 +178,5 @@ exec uv run --extra submit ray job submit \
   --address "${RAY_DASHBOARD_ADDRESS}" \
   --working-dir . \
   --runtime-env-json "${RUNTIME_ENV}" \
+  --metadata-json "${META_JSON}" \
   -- bash "${EXP_REL}/run.sh"

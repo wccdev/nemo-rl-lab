@@ -53,7 +53,16 @@ echo "[run] exp     : ${EXP_NAME}"
 echo "[run] profile : ${CLUSTER_PROFILE}"
 echo "[run] entry   : ${ENTRY}"
 echo "[run] config  : ${CONFIG}"
+# 可复现元数据（由 lab submit 注入；容器内直跑时为空）。落到作业日志，便于事后回查代码/配置版本。
+echo "[run] version : run_id=${NRL_RUN_ID:-(直跑)} git=${NRL_GIT_COMMIT:-?}$([[ "${NRL_GIT_DIRTY:-0}" == 1 ]] && echo '+dirty') config=${NRL_CONFIG_SHA:-?}"
 echo "[run] cluster/产物 overrides:"; printf '          %s\n' "${OVERRIDES[@]}"
+
+# 集群侧预置密钥文件（容器内路径，由 submit.env 的 CLUSTER_SECRETS_FILE 指定并随作业转发其路径）。
+# 配了它就不必把密钥明文塞进 runtime_env（不会暴露在 Ray dashboard）；密钥在此处 source 进作业进程。
+if [[ -n "${CLUSTER_SECRETS_FILE:-}" && -f "${CLUSTER_SECRETS_FILE}" ]]; then
+  set -a; source "${CLUSTER_SECRETS_FILE}"; set +a
+  echo "[run] secrets : sourced ${CLUSTER_SECRETS_FILE}"
+fi
 
 # 本地密钥/HF 配置（容器内直跑用；lab submit 路径由 runtime_env 注入，不依赖此文件）
 SECRETS_ENV="${REPO_ROOT}/cluster/secrets.env"

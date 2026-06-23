@@ -127,3 +127,32 @@ uv run lab ls
 
 `SWANLAB_API_KEY`、`HF_TOKEN`、`RAY_DASHBOARD_ADDRESS`、`NEMO_RL_DIR` 等放 **`cluster/submit.env`**（通用层 + 各 profile 集群层，均已 `.gitignore`），不要入库。详见上文「submit.env 分两层」与 [`docs/remote-submit.md`](../docs/remote-submit.md) §2.1。
 
+#### 密钥转发的两种模式（多人共用集群务必看）
+
+`lab submit` 让远程作业拿到密钥（`SWANLAB_API_KEY` / `HF_TOKEN` / `JUDGE_API_KEY` / `KB_API_KEY`）有两种方式：
+
+| 模式 | 怎么配 | 密钥是否暴露 | 适用 |
+| --- | --- | --- | --- |
+| **明文转发（默认/兜底）** | 在 `submit.env` 填密钥 | ⚠️ 会写进 Ray runtime_env，出现在 **Dashboard 的 job 详情**，同集群他人可见 | 单人 / 私有集群 |
+| **集群侧 secrets 文件（推荐）** | 集群层 `submit.env` 设 `CLUSTER_SECRETS_FILE=<容器内路径>`，把密钥放到该容器内文件（`chmod 600`） | ✅ 只转发**路径**，密钥不进 Dashboard；作业在集群侧 `source` | 多人共用集群 |
+
+> 配了 `CLUSTER_SECRETS_FILE` 后，通用层 `submit.env` 里的 `SWANLAB_API_KEY` / `HF_TOKEN` 可留空。
+> `submit` 检测到将明文转发密钥时会打印安全提示。
+
+#### 提交可追溯（git / config 指纹）
+
+`lab submit` 每次会自动：
+
+- 注入 `NRL_GIT_COMMIT` / `NRL_GIT_DIRTY` / `NRL_CONFIG_SHA` / `NRL_RUN_ID` 到作业（落在 `ray job logs` 的 `[run] version: ...` 行）；
+- 在本地 `.lab/runs.jsonl`（已 `.gitignore`）追加一行台账：run_id / 时间 / action / 用户 / 实验 / profile / commit / dirty / config 指纹 / 地址；
+- 把 `run_id` 写进 Ray 作业 **metadata**（`lab_run_id`），用于把本地台账与集群作业状态对上（不依赖随机 submission_id）；
+- 工作目录 **dirty**（有未提交改动）时给出警告——上传的是当前磁盘内容，但 commit 无法完整复现本次运行，建议先提交再 submit。
+
+`lab export` / `lab eval` 也写同一份台账（`action=export|eval`）。随时 `uv run lab runs`（`--all` / `--exp <名>`）查看历史，
+事后看到一个 SwanLab / 作业，用日志里的 `git=<commit>` 即可回到对应代码版本。
+
+#### 关联作业状态 / 集群预检
+
+- `lab runs --status`：连 dashboard（`/api/jobs/`，纯 HTTP 无需 ray），按 `run_id` 把台账对上集群作业状态（RUNNING/SUCCEEDED/FAILED…），一屏看「这次提交跑成没」；连不上时自动降级为纯本地台账。
+- `lab status`：提交前预检——整集群空闲 GPU（解析 `/api/cluster_status`）+ 自己的活跃作业（RUNNING/PENDING），避免撞满卡。`--all` 看全部状态作业。
+

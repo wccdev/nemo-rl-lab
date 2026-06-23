@@ -42,6 +42,9 @@ ray_results/
 /tmp/ray/
 *.pid
 
+# 本地 run 台账（lab submit 追加；含 IP/用户，仅本地追溯用）
+.lab/
+
 # ============ Python ============
 __pycache__/
 *.py[cod]

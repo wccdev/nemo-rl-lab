@@ -46,7 +46,10 @@ Ray CLI（job submission 客户端，仅提交用、无需 GPU）由 **uv 管理
 # 安装 Mac 端 Ray CLI（一次）。也可不手动装：lab submit 会用 `uv run --extra submit` 自动按需装。
 uv sync --extra submit
 
-# 提交配置分两层（都已 .gitignore，不入库），各从模板复制后填写：
+# 提交配置分两层（都已 .gitignore，不入库）。推荐交互式引导（自动 cp 模板 + 填关键项）：
+uv run lab init                          # 问你：默认 profile / SwanLab Key / HF token；再选集群层填 地址 / 容器内路径
+
+# 或手动从模板复制后编辑：
 cp cluster/submit.env.example            cluster/submit.env             # 通用层：密钥 / RUN_USER / 默认 profile（换集群不动）
 cp cluster/gb10-spark/submit.env.example cluster/gb10-spark/submit.env  # 集群层：地址 / 容器内路径（随集群走）
 ```
@@ -83,11 +86,15 @@ HF_HOME=/home/aidenlu/nemo-rl-work/hf_cache       # 集群模型缓存（须先 
 Mac 必须能访问 head 的 `8265`（dashboard/提交）和 `6379`（Ray GCS）。
 
 - **同一局域网**（Mac 和 Spark 都在 `192.168.1.x`）：直接通，填真实 IP 即可。
-- **不在同一网**：用 SSH 隧道把端口转发到本地：
+- **不在同一网**：用 SSH 隧道把端口转发到本地。推荐用封装命令（在集群层 submit.env 设 `SSH_HOST` 和 `RAY_HEAD_IP`，或用选项）：
+  ```bash
+  uv run lab tunnel                                   # 转发 8265/6379，保持窗口开启
+  uv run lab tunnel --host 跳板机 --head-ip 192.168.1.4   # 显式指定
+  # 然后另开终端把 submit.env 改成 RAY_DASHBOARD_ADDRESS=http://127.0.0.1:8265
+  ```
+  等价的原生命令：
   ```bash
   ssh -N -L 8265:192.168.1.4:8265 -L 6379:192.168.1.4:6379 <跳板机或集群可达主机>
-  # 然后 submit.env 里改成：
-  #   RAY_DASHBOARD_ADDRESS=http://127.0.0.1:8265
   ```
   `start_ray_head.sh` 已带 `--dashboard-host=0.0.0.0`，dashboard 对外可达。
 
@@ -122,7 +129,17 @@ uv run lab ray status --nemo-rl /opt/NeMo-RL   # 应看到 2 nodes
 
 ### 方式 B：从 Mac 远程触发（不进容器交互）
 
-如果不想 ssh 进容器,用 `ssh + docker exec` 一行触发（把 `<容器名>` / 路径换成你的）：
+推荐用封装命令 `lab cluster up`（先在集群层 `cluster/<profile>/submit.env` 配好
+`CLUSTER_SSH_HEAD` / `CLUSTER_SSH_WORKERS` / `CLUSTER_CONTAINER` / `CLUSTER_REPO_DIR`，可选 `RAY_HEAD_IP`）：
+
+```bash
+uv run lab cluster up                  # ssh+docker exec 起 head + 各 worker
+uv run lab cluster up --dry-run        # 只打印将执行的远程命令，先核对
+uv run lab cluster down                # 各节点容器内 ray stop（释放 GPU）
+uv run lab status                      # 起好后确认节点数 / 空闲 GPU
+```
+
+等价的原生命令（把 `<容器名>` / 路径换成你的）：
 
 ```bash
 ssh spark-1 'docker exec <容器名> bash -lc "cd /work/llm && bash cluster/gb10-spark/start_ray_head.sh"'
@@ -130,6 +147,7 @@ ssh spark-2 'docker exec <容器名> bash -lc "cd /work/llm && bash cluster/gb10
 ```
 
 > 集群只要不关，这步做一次即可，之后反复提交作业都不用重做。
+> `lab cluster` 是【从本机远程编排】（ssh+docker exec）；`lab ray head/worker` 是【已在容器内】时用的原语，别混。
 
 ---
 

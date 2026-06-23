@@ -85,10 +85,76 @@ else
   rm -f "${DEST}/.gitkeep"
   # 集群绑定：给了 --cluster 就覆盖模板默认；否则用模板自带的 cluster。
   [[ -n "${CLUSTER}" ]] && printf '%s\n' "${CLUSTER}" > "${DEST}/cluster"
-  echo "已创建实验: ${DEST}"
+
+  # 按方法塑形骨架（LAB_METHOD 由 lab new --method 传入，默认 grpo=模板原样）。
+  METHOD="${LAB_METHOD:-grpo}"
+  case "${METHOD}" in
+    grpo) ;;  # 模板默认即 GRPO，无需改
+    sft)
+      # 切基底 → sft.yaml；删掉 grpo/loss_fn 块、补 sft 块（SFT schema 没有 grpo/loss_fn）。
+      python3 - "${DEST}/config.yaml" <<'PY'
+import re, sys, pathlib
+f = pathlib.Path(sys.argv[1])
+t = f.read_text().replace("../../configs/base/grpo_math_1B.yaml", "../../configs/base/sft.yaml")
+
+def drop_block(text, key):
+    lines, out, i = text.splitlines(keepends=True), [], 0
+    while i < len(lines):
+        if re.match(rf'^{key}:\s*$', lines[i]):
+            i += 1
+            while i < len(lines) and not re.match(r'^[A-Za-z_]+:', lines[i]):
+                i += 1
+        else:
+            out.append(lines[i]); i += 1
+    return "".join(out)
+
+t = drop_block(drop_block(t, "grpo"), "loss_fn")
+sft_block = (
+    "sft:\n"
+    "  max_num_epochs: 1\n"
+    "  val_period: 50\n"
+    "  val_batches: 8\n\n"
+    "# 数据集：SFT 读指令数据（见 common/data/README.md 与官方 examples/run_sft.py）\n"
+    "# data:\n"
+    "#   train:\n"
+    "#     data_path: /abs/path/train.jsonl\n\n"
+)
+t = t.replace("logger:", sft_block + "logger:", 1)
+f.write_text(t)
+PY
+      # 取消模板里 SFT 入口那行的注释（行首是 '# export ENTRY=...'）。
+      python3 - "${DEST}/run.sh" <<'PY'
+import sys, pathlib, re
+f = pathlib.Path(sys.argv[1])
+t = re.sub(r'^#\s*export ENTRY="\$\{ENTRY:-examples/run_sft\.py\}"',
+           'export ENTRY="${ENTRY:-examples/run_sft.py}"', f.read_text(), flags=re.M)
+f.write_text(t)
+PY
+      ;;
+    agent)
+      # 切基底 → grpo_sliding_puzzle.yaml（含 env + max_rollout_turns），bump 多轮上限，放入 run.py 骨架。
+      python3 - "${DEST}/config.yaml" <<'PY'
+import re, sys, pathlib
+f = pathlib.Path(sys.argv[1])
+t = f.read_text().replace("../../configs/base/grpo_math_1B.yaml", "../../configs/base/grpo_sliding_puzzle.yaml")
+t = re.sub(r'^(\s*max_rollout_turns:\s*)1\b.*$',
+           r'\g<1>6            # 多轮 Agent：工具调用 + 答题轮数上限', t, flags=re.M)
+f.write_text(t)
+PY
+      cp "${REPO_ROOT}/templates/agent-run.py.tmpl" "${DEST}/run.py"
+      ;;
+    *)
+      echo "未知 --method: ${METHOD}（可选 grpo | sft | agent）"; rm -rf "${DEST}"; exit 1 ;;
+  esac
+
+  echo "已创建实验: ${DEST}（method=${METHOD}）"
   echo "  · 目标集群(cluster): $(tr -d '[:space:]' < "${DEST}/cluster" 2>/dev/null || echo 未设置)（按需改：echo h100 > ${DEST}/cluster）"
   echo "下一步:"
   echo "  1. 编辑 ${DEST}/README.md（目标 / 模型 / 数据 / SwanLab）"
-  echo "  2. 编辑 ${DEST}/config.yaml（选 defaults 基底+模型，写本实验差异）"
-  echo "  3. 若是 SFT：取消 ${DEST}/run.sh 里 ENTRY 那行注释；自定义环境：写 ${DEST}/run.py（自动选用）。见 configs/README.md"
+  echo "  2. 编辑 ${DEST}/config.yaml（基底已设为 ${METHOD}；写本实验差异）"
+  case "${METHOD}" in
+    sft)   echo "  3. SFT 入口已设好（run.sh 的 ENTRY=examples/run_sft.py）；填好数据后 lab submit ${NAME}" ;;
+    agent) echo "  3. 编辑 ${DEST}/run.py（已放骨架：实现你的环境 + 数据，见文件内 TODO 与 multitool 范例）" ;;
+    *)     echo "  3. 自定义多轮环境：写 ${DEST}/run.py（自动选用）。见 configs/README.md" ;;
+  esac
 fi

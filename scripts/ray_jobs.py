@@ -89,18 +89,55 @@ def _clean(client: JobSubmissionClient, assume_yes: bool = False) -> None:
     print(f"已删除 {ok}/{len(targets)} 个作业。")
 
 
+_ACTIVE = {"RUNNING", "PENDING"}
+
+
+def _cancel_all(client: JobSubmissionClient, assume_yes: bool = False) -> None:
+    """停止所有运行中/等待中的作业（区别于 --clean 只删终态记录）。"""
+
+    def _is_active(j) -> bool:
+        return str(j.status) in _ACTIVE or getattr(j.status, "value", "") in _ACTIVE
+
+    targets = [j for j in client.list_jobs() if _is_active(j)]
+    if not targets:
+        print("没有运行中/等待中的作业。")
+        return
+    print(f"将停止 {len(targets)} 个活跃作业：")
+    for j in targets:
+        print(f"  - {j.submission_id or j.job_id}  {j.status}")
+    if not assume_yes:
+        ans = input("确认全部停止？[y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("已取消。")
+            return
+    ok = 0
+    for j in targets:
+        jid = j.submission_id or j.job_id
+        try:
+            client.stop_job(jid)
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠️ 停止 {jid} 失败: {e}")
+    print(f"已请求停止 {ok}/{len(targets)} 个作业（停止是异步的，稍后 lab job list 复核状态）。")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--address", required=True, help="Ray dashboard 地址")
     ap.add_argument("--all", action="store_true", help="显示全部（默认只显示最近 15 条）")
     ap.add_argument("--clean", action="store_true", help="删除所有已结束(FAILED/SUCCEEDED/STOPPED)的作业")
-    ap.add_argument("--yes", action="store_true", help="清理时跳过确认")
+    ap.add_argument("--cancel-all", action="store_true", help="停止所有运行中/等待中的作业")
+    ap.add_argument("--yes", action="store_true", help="清理/停止时跳过确认")
     args = ap.parse_args()
 
     client = JobSubmissionClient(args.address)
 
     if args.clean:
         _clean(client, assume_yes=args.yes)
+        return
+
+    if args.cancel_all:
+        _cancel_all(client, assume_yes=args.yes)
         return
 
     jobs = client.list_jobs()

@@ -161,7 +161,7 @@ def qa_rule_reward_fn(queries, completions, expected_answers, **kwargs):
     """NeMo-RL 规则奖励入口。三个等长列表，返回 float 列表。"""
     groups = _load_synonyms()
     return [_grade_one(exp, comp, groups)
-            for comp, exp in zip(completions, expected_answers)]
+            for comp, exp in zip(completions, expected_answers, strict=False)]
 
 
 if __name__ == "__main__":
