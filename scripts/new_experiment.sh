@@ -90,5 +90,5 @@ else
   echo "下一步:"
   echo "  1. 编辑 ${DEST}/README.md（目标 / 模型 / 数据 / SwanLab）"
   echo "  2. 编辑 ${DEST}/config.yaml（选 defaults 基底+模型，写本实验差异）"
-  echo "  3. 若是 SFT/Agent，改 ${DEST}/run.sh 的 ENTRY（见 configs/README.md）"
+  echo "  3. 若是 SFT：取消 ${DEST}/run.sh 里 ENTRY 那行注释；自定义环境：写 ${DEST}/run.py（自动选用）。见 configs/README.md"
 fi
