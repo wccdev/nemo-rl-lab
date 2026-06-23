@@ -2,7 +2,7 @@
 
 硬件：2 台 NVIDIA DGX Spark，每台 GB10 Grace-Blackwell 超级芯片（统一内存，aarch64 架构）。NeMo-RL 用 **Ray** 把两台机器组成一个集群。
 
-> 注意：GB10 为 ARM64 + Blackwell 架构，安装依赖时请使用对应的 aarch64 / CUDA 容器或 wheel。详见 `env/README.md`。
+> 注意：GB10 为 ARM64 + Blackwell 架构，安装依赖时请使用对应的 aarch64 / CUDA 容器或 wheel。架构差异与 NeMo-RL 安装见 [`cluster/README.md`](../cluster/README.md)（§依赖与环境）。
 
 ## 0. 运行位置（重要）
 

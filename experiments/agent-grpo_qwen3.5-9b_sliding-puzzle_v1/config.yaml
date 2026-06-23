@@ -31,12 +31,12 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  max_total_sequence_length: 1024   # 2x2 拼图轮次短，1024 够用；OOM 先降到 768
+  max_total_sequence_length: 768   # 2x2 拼图轮次短，1024 够用；OOM 先降到 768
   train_global_batch_size: 32        # 必须 = num_prompts_per_step × num_generations_per_prompt（4×8）
   generation:
     max_new_tokens: 256              # 多轮：限制每轮生成长度，给多轮留空间、省 KV
     vllm_cfg:
-      gpu_memory_utilization: 0.4    # 单卡与训练分时共用这张 H100；OOM 降到 0.3，富余可升到 0.5
+      gpu_memory_utilization: 0.3    # 单卡与训练分时共用这张 H100；OOM 降到 0.3，富余可升到 0.5
 
 grpo:
   num_prompts_per_step: 4

@@ -58,11 +58,9 @@ nemo-rl-lab/
 │   ├── naming-convention.md  # 命名规范（务必先读）
 │   ├── remote-submit.md      # 从 Mac 提交训练到 Ray 集群（完整操作指南）
 │   ├── setup-dgx-spark-gb10.md
-│   ├── setup-h200.md
+│   ├── setup-h200.md           # 历史：Hopper 规划；当前 x86 单机见 cluster/h100/
 │   └── swanlab.md            # SwanLab 接入说明
-├── env/                      # 环境与依赖说明
-│   └── README.md
-├── cluster/                  # 硬件 / 分布式 profile（与训练解耦）
+├── cluster/                  # 硬件 / 分布式 profile + 依赖与环境说明（见 cluster/README.md）
 │   ├── h100/                 # 单机 1× H100（远程微调平台主力）
 │   ├── gb10-spark/           # 2× DGX Spark GB10
 │   └── b300/                 # B300（后续）
@@ -208,8 +206,8 @@ uv run lab job stop <job_id>        # 停止作业
 
 ## 快速开始
 
-1. 装 NeMo-RL 0.6.0 与依赖：[`env/README.md`](env/README.md)
-2. 配置 SwanLab：[`docs/swanlab.md`](docs/swanlab.md)
-3. 集群 / 硬件 profile：[`cluster/README.md`](cluster/README.md)、[`docs/setup-dgx-spark-gb10.md`](docs/setup-dgx-spark-gb10.md)
-4. **从 Mac 提交到集群**：[`docs/remote-submit.md`](docs/remote-submit.md)
+1. **本机 CLI + 远程提交**：上方「最快上手」+ [`docs/remote-submit.md`](docs/remote-submit.md)
+2. **集群内 NeMo-RL / 依赖 / 架构差异**：[`cluster/README.md`](cluster/README.md)（§依赖与环境）
+3. 配置 SwanLab：[`docs/swanlab.md`](docs/swanlab.md)
+4. 集群 / 硬件 profile：[`cluster/README.md`](cluster/README.md)、[`docs/setup-dgx-spark-gb10.md`](docs/setup-dgx-spark-gb10.md)
 5. 命名规范：[`docs/naming-convention.md`](docs/naming-convention.md)

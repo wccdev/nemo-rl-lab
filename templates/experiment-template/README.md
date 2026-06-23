@@ -12,7 +12,7 @@
 - `config.yaml` 通过 `defaults` 继承基底（`configs/base/`）+ 模型片段（`configs/models/`），
   **只写本实验差异**；不断调参就改 `config.yaml` 的「本实验差异」部分。
 - 入口在 `run.sh` 顶部设 `ENTRY`（GRPO / SFT），见 `configs/README.md` 方法对照表。
-- 硬件 profile：`gb10-spark | h200`（`cluster/<profile>/overrides.conf` 运行时叠加）。
+- 硬件 profile：`h100 | gb10-spark | b300`（实验目录 `cluster` 文件绑定；`cluster/<profile>/overrides.conf` 运行时叠加）。
 
 ## SwanLab
 
