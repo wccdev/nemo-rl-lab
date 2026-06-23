@@ -45,6 +45,10 @@ ray_results/
 # 本地 run 台账（lab submit 追加；含 IP/用户，仅本地追溯用）
 .lab/
 
+# Web console frontend
+web/node_modules/
+web/dist/
+
 # ============ Python ============
 __pycache__/
 *.py[cod]

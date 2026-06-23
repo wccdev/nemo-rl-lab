@@ -1082,20 +1082,35 @@ job_app = typer.Typer(
 app.add_typer(job_app, name="job")
 
 
-@app.command(help="启动本地 Web 面板：看训练 reward 曲线 + 验证对话（数据取自 Ray 日志，纯本地只读）")
+@app.command(help="NeMo-RL Lab Console：微调 Web 控制台（React + FastAPI；需先 pnpm -C web build 或 dev 联调）")
 def web(
     port: int = typer.Option(8080, "--port", "-p", help="本地服务端口"),
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
+    no_auth: bool = typer.Option(True, "--no-auth/--auth", help="本机默认免登录；团队部署用 --auth"),
+    serve: bool = typer.Option(False, "--serve", help="绑定 0.0.0.0（团队内网部署）"),
     no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
 ) -> None:
-    # 取数走 ray JobSubmissionClient（同 lab job samples）→ --extra submit；
-    # HTTP 服务用 FastAPI + uvicorn → --extra web。一条命令即起。
-    cmd = ["uv", "run", "--extra", "submit", "--extra", "web",
-           "python", str(SCRIPTS / "web_dashboard.py"),
-           "--address", _ray_address(address, profile), "--port", str(port)]
-    if not no_open:
+    cmd = [
+        "uv", "run", "--extra", "submit", "--extra", "web",
+        "python", "-m", "nemo_rl_lab.web.server",
+        "--address", _ray_address(address, profile),
+        "--port", str(port),
+    ]
+    if no_auth:
+        cmd.append("--no-auth")
+    if serve:
+        cmd.append("--serve")
+    if no_open:
+        pass
+    else:
         cmd.append("--open")
+    dist = ROOT / "web" / "dist"
+    if not dist.is_dir():
+        typer.secho(
+            "提示：前端未构建。开发联调：终端1 `uv run lab web --no-open`，终端2 `pnpm -C web dev`（Vite :5173 代理 /api）",
+            fg=typer.colors.YELLOW,
+        )
     raise typer.Exit(_run(cmd))
 
 

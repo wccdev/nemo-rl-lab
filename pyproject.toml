@@ -17,7 +17,14 @@ dependencies = [
 submit = ["ray[default]==2.55.1"]
 # 本地训练面板 lab web 的 HTTP 服务（FastAPI + uvicorn）。取数仍走 submit extra 的 ray，
 # 故 lab web 同时启用 submit + web 两个 extra。安装：uv sync --extra submit --extra web
-web = ["fastapi>=0.110", "uvicorn>=0.29", "pyyaml>=6"]
+web = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pyyaml>=6",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "python-multipart>=0.0.9",
+]
 # 开发/CI：lint + 测试。安装：uv sync --extra dev
 dev = ["pytest>=8", "ruff>=0.5", "pyyaml>=6"]
 
