@@ -23,7 +23,8 @@ defaults:
 #  reference_policy_kl_penalty (loss_fn)  贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏/退化
 #  num_generations_per_prompt (grpo)      每题采样数（组内基线）。多→梯度稳但更慢更吃显存
 #  max_rollout_turns / env.qa_docs.cfg.max_turns  多轮上限（两者须对齐）。多→更吃内存
-#  max_total_sequence_length (policy)     上下文长度（对齐 baseline 1536，省内存）
+#  max_total_sequence_length (policy)     ★整条多轮轨迹(prompt+所有轮+所有检索回灌)的总预算，不是每轮。
+#                                          多轮必须比 baseline 大：1536 连「搜一次+作答」都塞不下，会在写 \boxed 前被截断
 #  max_num_steps / val_period (grpo)      训多久 / 多久验证一次
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -33,12 +34,14 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  # ⚠️ 与 baseline 完全相同的 1536：baseline 实测 1536 都会在 ~step280 被 Ray(host RAM) OOM；
-  #    agent 多轮每步堆更多 rollout 进内存，2048 必崩且崩更早。故 seq 也对齐 1536——
-  #    既最省内存，又让两实验唯一变量就是「多轮+检索」，对比最干净。
-  #    为塞进 1536 不截断：已把 max_turns 收到 3、DOCS_MAX_CHARS 收到 500（见下 env.qa_docs.cfg）。
-  #    仍 OOM 再降：env.qa_docs.cfg.max_turns→2、DOCS_MAX_CHARS→400、seq→1280（batch 已最低，勿动）。
-  max_total_sequence_length: 1536
+  # ⚠️ 这是【整条多轮轨迹】的总预算：prompt + preamble + 所有轮生成 + 所有检索回灌，全部累加。
+  #    1536（=baseline 单轮值）对多轮是错的：仅「prompt(~550)+搜一次(≤512)+回灌(~300)+作答(~512)」
+  #    就 ≈1900>1536 → 在写 \boxed 前被截断 → 判 0。这正是初始 truncation_rate 0.6~0.9、准确率仅 15% 的根因。
+  #    故抬到 3072，让「检索一次+作答」乃至两次检索都能完整放下，截断率才回得来。
+  #    ⚠️ 代价：seq 翻倍会更吃 GB10 统一内存（baseline 1536 都会 ~step280 OOM）。若本实验 OOM，按序拉这些杆
+  #       （会轻微破坏与 baseline 的 batch 对齐，但「能写完答案」比「seq 数字相同」更重要）：
+  #       grpo.num_generations_per_prompt 4→2 → 启用 grpo_noncolocated.yaml(1卡生成/1卡训练) → seq 3072→2560。
+  max_total_sequence_length: 3072
   train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
   generation_batch_size: 8
   generation:
