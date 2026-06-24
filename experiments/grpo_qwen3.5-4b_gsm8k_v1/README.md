@@ -49,10 +49,9 @@ lab prepare gsm8k                              # 写到 datasets/gsm8k/{train,va
 ## 运行
 
 ```bash
-# 提交到集群（推荐）
+# 提交到集群（经中心化服务）
 lab submit grpo_qwen3.5-4b_gsm8k_v1
-#   或在集群容器内直接跑：
-NEMO_RL_DIR=/opt/NeMo-RL CLUSTER_PROFILE=gb10-spark lab run grpo_qwen3.5-4b_gsm8k_v1
+lab logs                          # 跟随最近一个作业日志
 ```
 
 ## SwanLab

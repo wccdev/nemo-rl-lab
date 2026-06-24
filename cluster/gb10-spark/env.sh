@@ -1,6 +1,6 @@
 # GB10 / DGX Spark 集群环境（实测跑通的配置）。
-# 被 start_ray_head.sh / start_ray_worker.sh / 各实验 run.sh 统一 source——
-# 一处修改，Ray 启动与训练启动都生效。网卡名 / HCA 按你机器实际填。
+# 被各实验 run.sh 在集群侧统一 source（Ray 集群由管理员/服务端起时也应 source 同一份）。
+# 一处修改，训练启动即生效。网卡名 / HCA 按你机器实际填。
 
 # --- 网络 / NCCL（跨节点通信，RoCE） ---
 export NCCL_SOCKET_IFNAME=enp1s0f0np0   # 有固定 IP 的管理/数据网卡（NCCL socket 用）

@@ -65,11 +65,6 @@ env/.venv/
 secrets.*
 *.local.yaml
 *.local.yml
-# 本地集群提交配置（含 IP / 密钥）
-# submit.env：通用层（密钥 / RUN_USER / 默认 profile）；各 profile 子目录的 submit.env：集群专属（地址 / 容器路径）
-cluster/submit.env
-cluster/*/submit.env
-cluster/**/hosts
 
 # ============ 系统 / 编辑器 ============
 .DS_Store

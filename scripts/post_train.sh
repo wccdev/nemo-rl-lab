@@ -128,7 +128,7 @@ do_export() {
   fi
   # 可选：推送到 HuggingFace Hub（需 HF_TOKEN）。新版 CLI 用 `hf upload`（huggingface-cli 已废弃）。
   if [[ -n "${PUSH_REPO}" ]]; then
-    [[ "${DRY}" == "1" ]] || : "${HF_TOKEN:?推送 Hub 需要 HF_TOKEN（在 submit.env / 集群侧 secrets 配置）}"
+    [[ "${DRY}" == "1" ]] || : "${HF_TOKEN:?推送 Hub 需要 HF_TOKEN（由中心化服务在集群侧注入）}"
     run uv run hf upload "${PUSH_REPO}" "${out}" --repo-type model
     echo "[post] 已推送到 https://huggingface.co/${PUSH_REPO}"
   fi

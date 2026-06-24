@@ -42,9 +42,12 @@ def test_creds_roundtrip(isolated_lab):
     assert cli_login._load_creds("https://lab.x.com") is None
 
 
-def test_gate_noop_in_direct_mode(isolated_lab):
-    # 未配 server：gate 必须直接返回（保持 direct 行为），不触发任何网络/浏览器
-    cli_login.gate("submit")
+def test_gate_requires_server(isolated_lab):
+    # 未接入中心化服务：gate 必须报错引导登录（不再有 direct no-op），不触发任何网络/浏览器
+    import typer
+
+    with pytest.raises(typer.BadParameter):
+        cli_login.gate("submit")
 
 
 def test_get_access_token_valid_and_expired(isolated_lab):

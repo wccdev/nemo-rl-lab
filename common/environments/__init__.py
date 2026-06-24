@@ -9,8 +9,8 @@ from common.environments.qa_env import (  # noqa: F401
     QAMetadata,
     QARewardEnv,
 )
-from common.environments.qa_kb_agent_env import (  # noqa: F401
-    QAKBAgentEnv,
-    QAKBMetadata,
-    kb_search,
+from common.environments.qa_docs_agent_env import (  # noqa: F401
+    QADocsAgentEnv,
+    QADocsMetadata,
+    docs_search,
 )

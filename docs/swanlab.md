@@ -11,11 +11,9 @@ swanlab login        # 粘贴 API Key
 export SWANLAB_API_KEY=xxxxxxxx
 ```
 
-> 在本仓库工作流里，`SWANLAB_API_KEY`（以及 `HF_TOKEN` / `HF_ENDPOINT` 国内镜像等）统一配在：
-> - `lab submit`（Mac→集群）：写到 `cluster/submit.env`（已 .gitignore），由 `submit_job.sh` 经 Ray runtime_env 转发到作业。
-> - `lab run`（容器内直跑）：写到 `cluster/secrets.env`（已 .gitignore），各实验 `run.sh` 自动 source。
->
-> 模板见 `cluster/submit.env.example`。
+> 在本仓库工作流里，`SWANLAB_API_KEY`（以及 `HF_TOKEN` / `HF_ENDPOINT` 国内镜像等）由**中心化 Lab 服务**
+> 持有，并在集群侧注入到作业进程，本机不入库、也无需任何 `submit.env`。`lab submit` 时服务端自动转发。
+> 上面的 `swanlab login` / `export SWANLAB_API_KEY` 仅用于本机临时调试。
 
 ## 2. 在配置 / override 里启用
 

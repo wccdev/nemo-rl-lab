@@ -154,7 +154,7 @@ def _git_out(args: list[str], cwd: Path) -> str:
 
 
 def git_provenance(repo_root: Path, exp_rel: str) -> dict:
-    """提交可追溯：git commit / dirty / config 指纹（对齐旧 submit_job.sh）。"""
+    """提交可追溯：git commit / dirty / config 指纹。"""
     commit = (_git_out(["rev-parse", "--short", "HEAD"], repo_root) or "unknown").strip()
     dirty = bool(_git_out(["status", "--porcelain"], repo_root).strip())
     cfg = repo_root / exp_rel / "config.yaml"
@@ -291,6 +291,57 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None) -> None:
         raise typer.BadParameter(f"取日志失败 [{e.code}]") from e
 
 
+def job_overview_via_server(job_id: str, server: Optional[str] = None) -> dict:
+    """取作业概览（含 validations 列表），用于定位验证轮次。"""
+    srv = current_server(server)
+    if not srv:
+        raise typer.BadParameter("未配置 Lab 服务。")
+    path = f"/api/job?id={urllib.parse.quote(job_id)}"
+    try:
+        with _bearer_request(srv, "GET", path) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raise typer.BadParameter(f"取作业概览失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+
+
+def samples_via_server(job_id: str, vidx: int, offset: int = 0, limit: int = 6,
+                       server: Optional[str] = None) -> dict:
+    """取某次验证的多轮对话样本（分页）。"""
+    srv = current_server(server)
+    if not srv:
+        raise typer.BadParameter("未配置 Lab 服务。")
+    q = urllib.parse.urlencode({"id": job_id, "vidx": vidx, "offset": offset, "limit": limit})
+    try:
+        with _bearer_request(srv, "GET", f"/api/samples?{q}") as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raise typer.BadParameter(f"取样本失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+
+
+def cluster_status_via_server(server: Optional[str] = None) -> Optional[dict]:
+    """取集群 GPU 概览 + 活跃作业；Ray/服务不可达时返回 None（status 预检用）。"""
+    srv = current_server(server)
+    if not srv:
+        return None
+    try:
+        with _bearer_request(srv, "GET", "/api/cluster/status") as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError:
+        return None
+
+
+def batch_via_server(action: str, server: Optional[str] = None) -> dict:
+    """批量作业控制：cancel-all（停止全部在跑）/ clean（清理终态 Ray 记录），经服务端。"""
+    srv = current_server(server)
+    if not srv:
+        raise typer.BadParameter("未配置 Lab 服务。")
+    try:
+        with _bearer_request(srv, "POST", f"/api/jobs/{action}") as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raise typer.BadParameter(f"{action} 失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+
+
 # ----------------------------- 回环登录流 -----------------------------
 class _CallbackHandler(BaseHTTPRequestHandler):
     result: dict = {}
@@ -366,10 +417,12 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
 
 # ----------------------------- 命令门控 -----------------------------
 def gate(command: str) -> None:
-    """集群类命令执行前调用：server 模式未登录则自动开浏览器登录；direct 模式 no-op。"""
+    """集群类命令执行前调用：未接入中心化服务则报错引导登录；已接入但未登录则自动开浏览器认证。"""
     server = current_server()
     if not server:
-        return  # direct 模式：保持原有行为（读 submit.env 直连 Ray）
+        raise typer.BadParameter(
+            "未接入中心化服务。先 `lab login --server https://lab.company.com` 接入后再操作集群命令。"
+        )
     if command not in GATED_COMMANDS:
         return
     token = get_access_token(server)
@@ -431,7 +484,7 @@ def whoami(
     """显示当前登录身份 / 角色 / 配额。"""
     srv = current_server(server)
     if not srv:
-        typer.echo("direct 模式（未配置 Lab 服务）。用 `lab login --server ...` 接入中心化服务。")
+        typer.echo("未接入中心化服务。用 `lab login --server https://lab.company.com` 接入。")
         return
     token = get_access_token(srv)
     if not token:
@@ -461,7 +514,7 @@ def quota(
     """查看配额与实时用量（用量在 Phase C 接入）。"""
     srv = current_server(server)
     if not srv:
-        typer.echo("direct 模式（未配置 Lab 服务）。")
+        typer.echo("未接入中心化服务。用 `lab login --server https://lab.company.com` 接入。")
         return
     token = get_access_token(srv)
     if not token:
