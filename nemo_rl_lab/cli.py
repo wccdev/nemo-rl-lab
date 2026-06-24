@@ -24,7 +24,7 @@
     uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   提交作业到集群（经服务端，自动先校验）
     uv run lab status                              我的配额 / 用量 / 活跃作业
     uv run lab logs                                跟随最近一个作业的日志
-    uv run lab job list                            我的作业列表
+    uv run lab job ls                              我的作业列表
     uv run lab export grpo_qwen3.5-9b_gsm8k_v1     把 checkpoint 转 HF（自适应 dcp/megatron），可 --push-repo 推 Hub
     uv run lab eval grpo_qwen3.5-9b_gsm8k_v1       对 checkpoint 跑独立评测（未给 --model 先自动导出）
     uv run lab runs                                我的提交历史（服务端台账）
@@ -499,7 +499,7 @@ def status() -> None:
 
 @app.command(help="看作业日志：不给 job_id 默认跟随【最近一个】作业（经服务端转发）")
 def logs(
-    job_id: Optional[str] = typer.Argument(None, help="作业 ID（见 lab job list）；省略=最近一个"),
+    job_id: Optional[str] = typer.Argument(None, help="作业 ID（见 lab job ls）；省略=最近一个"),
 ) -> None:
     cli_login.gate("logs")
     jid = job_id or cli_login.latest_job_via_server()
@@ -528,8 +528,8 @@ def _server_jobs_table(jobs: list[dict]) -> None:
         typer.echo(f"{jid:<26} {str(j.get('status','-')):<10} {str(j.get('requested_gpus') or '-'):>4}  {j.get('exp','-')}")
 
 
-@job_app.command("list", help="列出我的集群作业（精简表格）")
-def job_list(
+@job_app.command("ls", help="列出我的集群作业（精简表格）")
+def job_ls(
     all_jobs: bool = typer.Option(False, "--all", help="显示全部（默认最近 15 条）"),
 ) -> None:
     cli_login.gate("job-list")
@@ -538,7 +538,7 @@ def job_list(
 
 @job_app.command("logs", help="查看作业日志（实时跟随）")
 def job_logs(
-    job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
+    job_id: str = typer.Argument(..., help="作业 ID（见 lab job ls）"),
 ) -> None:
     cli_login.gate("job-logs")
     cli_login.stream_logs_via_server(job_id)
@@ -559,7 +559,7 @@ def job_status(
 
 @job_app.command("samples", help="查看某次验证的多轮对话轨迹（默认最近一次验证）")
 def job_samples(
-    job_id: str = typer.Argument(..., help="作业 ID（见 lab job list）"),
+    job_id: str = typer.Argument(..., help="作业 ID（见 lab job ls）"),
     vidx: int = typer.Option(-1, "--vidx", help="验证轮次下标（默认 -1=最近一次）"),
     n: int = typer.Option(6, "-n", "--limit", help="显示样本条数"),
 ) -> None:

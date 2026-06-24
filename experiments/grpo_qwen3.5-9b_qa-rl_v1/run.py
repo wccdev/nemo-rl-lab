@@ -149,9 +149,12 @@ def main():
     env = QARewardEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
     task_to_env = {TASK_NAME: env}
 
+    # NeMo-RL main：setup() 返回 11 个值（新增第 3 位 nemo_gym actor，cluster 变为
+    # (train_cluster, inference_cluster) 元组）。未使用的用 _ 前缀占位。
     (
         policy,
         policy_generation,
+        _nemo_gym,
         cluster,
         dataloader,
         val_dataloader,

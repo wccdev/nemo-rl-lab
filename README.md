@@ -1,6 +1,6 @@
 # nemo-rl-lab
 
-基于 **NVIDIA NeMo-RL 0.6.0** 的大模型微调实验室。涵盖：
+基于 **NVIDIA NeMo-RL** 的大模型微调实验室。涵盖：
 
 - **SFT**（监督微调）
 - **GRPO / 强化学习**（RL）
@@ -41,7 +41,7 @@ lab logs                                        # 跟随最近一个作业的实
 | `gb10-spark` | 2× NVIDIA DGX Spark（GB10 Grace-Blackwell），通过 Ray 组成 2 节点集群 | `cluster/gb10-spark/` |
 | `b300` | NVIDIA B300（后续使用） | `cluster/b300/` |
 
-训练配置与硬件解耦：NeMo-RL 0.6.0 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`。每个实验**自带目标集群**（实验目录下 `cluster` 文件，`lab new --cluster` 写入）——因为 batch/seq/LoRA/显存等超参都是按某张卡的显存调出来的；`lab submit --profile` 可临时换卡跑。
+训练配置与硬件解耦：NeMo-RL 通过 CLI override 调集群（`cluster.num_nodes` / `cluster.gpus_per_node`）；硬件相关 override 抽到 `cluster/<profile>/overrides.conf`。每个实验**自带目标集群**（实验目录下 `cluster` 文件，`lab new --cluster` 写入）——因为 batch/seq/LoRA/显存等超参都是按某张卡的显存调出来的；`lab submit --profile` 可临时换卡跑。
 
 ## 目录结构
 
@@ -203,7 +203,7 @@ uv run lab login --server https://lab.company.com
 
 # B. 每次：提交、看/停作业（全程经服务端，本机不直连 Ray）
 uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
-uv run lab job list                 # 我的作业列表
+uv run lab job ls                   # 我的作业列表
 uv run lab logs <job_id>            # 实时日志（不给 job_id 跟随最近一个）
 uv run lab job stop <job_id>        # 停止作业
 ```
