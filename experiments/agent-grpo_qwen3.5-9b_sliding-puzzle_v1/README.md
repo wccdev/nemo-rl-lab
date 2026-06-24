@@ -50,7 +50,6 @@
 uv run lab submit agent-grpo_qwen3.5-9b_sliding-puzzle_v1
 uv run lab job logs <job_id> -f        # 实时日志
 uv run lab job samples <job_id>        # 看多轮对话（每轮移动 + 棋面）
-uv run lab web                         # 本地面板：reward 曲线 + 验证对话
 
 # 或在 H100 容器内直接跑
 NEMO_RL_DIR=/opt/NeMo-RL CLUSTER_PROFILE=h100 bash experiments/agent-grpo_qwen3.5-9b_sliding-puzzle_v1/run.sh

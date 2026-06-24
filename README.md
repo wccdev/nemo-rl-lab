@@ -29,7 +29,9 @@ lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1  # 或 fork 一个来调参（自
 lab prepare gsm8k
 lab submit grpo_qwen3.5-4b_gsm8k_v1             # 用实验自带的目标集群；--profile 可临时换
 lab job logs <job_id> -f                        # 实时日志
-lab web                                         # NeMo-RL Lab Console（React 微调 Web 平台；默认本机免登）
+
+# 可选：接入中心化服务（鉴权 / 配额 / 监控 + Web 控制台，由 nemo-rl-server 提供）
+lab login --server https://lab.company.com      # 登录后集群命令经服务端代理；未登录会自动跳浏览器
 ```
 
 每个实验「调什么 / 数据 / 奖励 / 怎么跑」见其目录下 `README.md`；远程提交完整细节见 [`docs/remote-submit.md`](docs/remote-submit.md)。

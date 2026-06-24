@@ -27,7 +27,7 @@
     uv run lab eval grpo_qwen3.5-9b_gsm8k_v1       对 checkpoint 跑独立评测（未给 --model 先自动导出）
     uv run lab runs --status                       本地台账并关联集群作业状态（这次提交跑成没）
     uv run lab job cancel-all                      停止所有运行中/等待中作业（clean 只删终态记录）
-    uv run lab web                                 本地 Web 面板：reward 曲线 + 验证对话
+    uv run lab login --server https://lab.company.com  接入中心化服务（鉴权/配额/监控；未登录的集群命令会自动跳浏览器）
     uv run lab run grpo_qwen3.5-9b_gsm8k_v1 --nemo-rl /opt/NeMo-RL   在集群容器内直接跑
     uv run lab ray head                            启动 Ray head（在 head 节点容器内）
     uv run lab sync-base --nemo-rl /opt/NeMo-RL    同步官方基底配置
@@ -46,6 +46,8 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+
+from nemo_rl_lab import cli_login
 
 # 包位于 <repo>/nemo_rl_lab/，仓库根是上一级（editable 安装下 __file__ 指向源码）。
 ROOT = Path(__file__).resolve().parent.parent
@@ -321,7 +323,7 @@ def init(
         default_prof = profile or cur.get("DEFAULT_CLUSTER_PROFILE") or (profiles[0] if profiles else "h100")
         hint = f"（可选: {', '.join(profiles)}）" if profiles else ""
         dprof = typer.prompt(f"  默认集群 profile{hint}", default=default_prof)
-        sw = typer.prompt("  SwanLab API Key（留空=不上传云端，用 lab web 本地看）", default=cur.get("SWANLAB_API_KEY", ""))
+        sw = typer.prompt("  SwanLab API Key（留空=不上传云端）", default=cur.get("SWANLAB_API_KEY", ""))
         hf = typer.prompt("  HuggingFace token（下载 gated 模型/数据需要，可留空）", default=cur.get("HF_TOKEN", ""))
         _set_env_line(shared, "DEFAULT_CLUSTER_PROFILE", dprof)
         _set_env_line(shared, "SWANLAB_API_KEY", sw)
@@ -411,6 +413,7 @@ def submit(
     ),
     no_validate: bool = typer.Option(False, "--no-validate", help="跳过提交前 config 校验"),
 ) -> None:
+    cli_login.gate("submit")
     exp_path = _resolve_exp(exp)
     if not no_validate:
         errors, _ = _validate_exp(exp_path)
@@ -421,6 +424,19 @@ def submit(
                 fg=typer.colors.RED,
             )
             raise typer.Exit(1)
+    # server 模式：打包 working-dir → 上传到中心化服务 → 服务端注入密钥后代理提交（密钥/地址不外泄）。
+    if cli_login.is_server_mode():
+        res = cli_login.submit_via_server(exp_path, profile, ROOT)
+        gpus = res.get("requested_gpus")
+        typer.secho(
+            f"✓ 已提交：job={res.get('job_id')}  run_id={res.get('run_id')}"
+            + (f"  GPU={gpus}" if gpus is not None else "")
+            + ("  [dry-run]" if res.get("dry_run") else ""),
+            fg=typer.colors.GREEN,
+        )
+        typer.echo(f"  跟随日志：lab logs {res.get('job_id')}")
+        raise typer.Exit(0)
+    # direct 模式：本机直连 Ray 提交。
     cmd = ["bash", str(SCRIPTS / "submit_job.sh"), exp_path]
     if profile:
         cmd.append(profile)
@@ -577,6 +593,26 @@ def doctor(
             warned += 1
         typer.secho(f"  {sym} {msg}", fg=color)
 
+    # server 模式：体检中心化服务连通性 + 登录态（Ray 地址/密钥在服务端，无需本机 submit.env）。
+    if cli_login.is_server_mode():
+        srv = cli_login.current_server()
+        typer.echo(f"中心化服务  {srv}")
+        token = cli_login.get_access_token(srv)
+        if not token:
+            line("fail", "未登录：先 `lab login`（集群命令会自动跳浏览器认证）")
+            raise typer.Exit(1)
+        try:
+            who = cli_login.usage_via_server()
+            q = who.get("quota") or {}
+            line("ok", "已登录且服务可达（/api/usage/mine）")
+            cap = q.get("max_concurrent_gpus")
+            line("ok", f"配额：GPU≤{'不限' if cap is None else cap}，作业≤{q.get('max_concurrent_jobs') or '不限'}")
+        except Exception as e:  # noqa: BLE001
+            line("fail", f"服务不可达或登录失效：{type(e).__name__}")
+            raise typer.Exit(1) from None
+        typer.secho("\n✓ server 模式体检通过", fg=typer.colors.GREEN)
+        raise typer.Exit(0)
+
     shared_path = ROOT / "cluster" / "submit.env"
     shared = _read_env_file(shared_path)
     typer.echo("提交配置")
@@ -615,7 +651,7 @@ def doctor(
     elif merged.get("SWANLAB_API_KEY") or merged.get("HF_TOKEN"):
         line("warn", "检测到密钥将随作业明文转发（Dashboard 可见）。多人共用建议设 CLUSTER_SECRETS_FILE")
     else:
-        line("warn", "未配置密钥（SwanLab 不上传云端，可用 lab web 本地看；下载 gated 模型需 HF_TOKEN）")
+        line("warn", "未配置密钥（SwanLab 不上传云端；下载 gated 模型需 HF_TOKEN）")
 
     typer.echo("集群连通 / 版本")
     pinned = _pinned_ray_version()
@@ -767,6 +803,22 @@ def runs(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    # server 模式：台账在服务端，展示「我的作业」（本机 .lab/runs.jsonl 不再写入）。
+    if cli_login.is_server_mode():
+        cli_login.gate("status")
+        jobs = cli_login.list_my_jobs(limit=200 if all_runs else limit)
+        if exp:
+            jobs = [j for j in jobs if exp in (j.get("exp") or "")]
+        if not jobs:
+            typer.echo("（服务端没有你的作业记录；lab submit 后会出现）")
+            raise typer.Exit(0)
+        typer.echo(f"{'TIME':<20} {'STATUS':<10} {'GPU':>4}  {'EXP':<28} RUN_ID")
+        for j in jobs:
+            typer.echo(
+                f"{str(j.get('submitted_at','-'))[:19]:<20} {str(j.get('status','-')):<10} "
+                f"{str(j.get('requested_gpus') or '-'):>4}  {Path(str(j.get('exp','-'))).name:<28} {j.get('lab_run_id','-')}"
+            )
+        raise typer.Exit(0)
     entries = _read_ledger(LEDGER_PATH)
     if not entries:
         typer.echo(f"（台账为空：{LEDGER_PATH} 还没有记录；lab submit / export / eval 后会写入）")
@@ -831,6 +883,26 @@ def status(
     profile: Optional[str] = _PROF_OPT,
     all_jobs: bool = typer.Option(False, "--all", help="作业列出全部状态（默认只看 RUNNING/PENDING）"),
 ) -> None:
+    cli_login.gate("status")
+    # server 模式：只看本人配额/用量/活跃作业（不直连 Ray，不泄露他人作业）。
+    if cli_login.is_server_mode():
+        data = cli_login.usage_via_server()
+        q, u = data.get("quota") or {}, data.get("usage") or {}
+        cap = q.get("max_concurrent_gpus")
+        typer.echo("我的用量")
+        typer.echo(f"  并发 GPU : {u.get('active_gpus', 0)} / {'不限' if cap is None else cap}")
+        typer.echo(f"  并发作业 : {u.get('active_jobs', 0)} / {q.get('max_concurrent_jobs') or '不限'}")
+        typer.echo(f"  今日/累计 GPU-hours : {u.get('gpu_hours_today', 0):.1f} / {u.get('gpu_hours_total', 0):.1f}")
+        running = u.get("running") or []
+        typer.echo("\n我的活跃作业")
+        if not running:
+            typer.echo("  （无）")
+        else:
+            for r in running:
+                jid = (r.get("ray_submission_id") or r.get("lab_run_id") or "-")[:26]
+                typer.echo(f"  {jid:<26} {r.get('status','-'):<10} GPU={r.get('gpus') or '-'}  {r.get('exp','-')}")
+        typer.echo("\n详情/日志： lab logs <JOB ID>")
+        raise typer.Exit(0)
     addr = _ray_address(address, profile)
 
     # 1) 集群 GPU / 资源
@@ -921,6 +993,15 @@ def logs(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("logs")
+    # server 模式：经服务端转发日志（不直连 Ray）。
+    if cli_login.is_server_mode():
+        jid = job_id or cli_login.latest_job_via_server()
+        if not jid:
+            typer.secho("没有可跟随的作业（先 lab submit）。", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
+        cli_login.stream_logs_via_server(jid)
+        raise typer.Exit(0)
     addr = _ray_address(address, profile)
     jid = job_id
     if not jid:
@@ -939,6 +1020,22 @@ def logs(
 def _submit_post(action: str, exp_path: str, profile: Optional[str], flags: list[str], dry_run: bool) -> int:
     """把 export/eval 作业提交到集群（ray job submit，入口 scripts/post_train.sh）。"""
     import time
+
+    cli_login.gate(action)  # export / eval：server 模式需登录
+    # server 模式：打包 working-dir → 服务端代理提交 post_train.sh（不直连 Ray，密钥/地址不外泄）。
+    if cli_login.is_server_mode():
+        if dry_run:
+            typer.secho("（server 模式 dry-run 由服务端 LAB_SUBMIT_DRY_RUN 控制）", fg=typer.colors.YELLOW)
+        res = cli_login.submit_post_via_server(action, exp_path, profile, flags, ROOT)
+        gpus = res.get("requested_gpus")
+        typer.secho(
+            f"✓ 已提交 [{action}]：job={res.get('job_id')}  run_id={res.get('run_id')}"
+            + (f"  GPU={gpus}" if gpus is not None else "")
+            + ("  [dry-run]" if res.get("dry_run") else ""),
+            fg=typer.colors.GREEN,
+        )
+        typer.echo(f"  跟随日志：lab logs {res.get('job_id')}")
+        return 0
 
     prof = _resolve_profile(profile)
     if not prof:
@@ -1082,40 +1179,19 @@ job_app = typer.Typer(
 app.add_typer(job_app, name="job")
 
 
-@app.command(help="NeMo-RL Lab Console：微调 Web 控制台（缺 dist 或源码更新时自动 pnpm build）")
-def web(
-    port: int = typer.Option(8080, "--port", "-p", help="本地服务端口"),
-    address: Optional[str] = _ADDR_OPT,
-    profile: Optional[str] = _PROF_OPT,
-    no_auth: bool = typer.Option(True, "--no-auth/--auth", help="本机默认免登录；团队部署用 --auth"),
-    serve: bool = typer.Option(False, "--serve", help="绑定 0.0.0.0（团队内网部署）"),
-    no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
-    no_build: bool = typer.Option(False, "--no-build", help="跳过自动构建（配合 pnpm dev 联调时用）"),
-) -> None:
-    from nemo_rl_lab.web.frontend_build import ensure_frontend_built
+def _server_jobs_table(jobs: list[dict]) -> None:
+    if not jobs:
+        typer.echo("（无作业）")
+        return
+    typer.echo(f"{'JOB ID':<26} {'状态':<10} {'GPU':>4}  实验")
+    for j in jobs:
+        jid = (j.get("ray_submission_id") or j.get("lab_run_id") or "-")[:26]
+        typer.echo(f"{jid:<26} {str(j.get('status','-')):<10} {str(j.get('requested_gpus') or '-'):>4}  {j.get('exp','-')}")
 
-    try:
-        ensure_frontend_built(ROOT, skip=no_build)
-    except subprocess.CalledProcessError:
-        typer.secho("前端构建失败（pnpm 退出非 0）。", fg=typer.colors.RED)
-        raise typer.Exit(1) from None
-    except RuntimeError as e:
-        typer.secho(str(e), fg=typer.colors.RED)
-        raise typer.Exit(1) from None
 
-    cmd = [
-        "uv", "run", "--extra", "submit", "--extra", "web",
-        "python", "-m", "nemo_rl_lab.web.server",
-        "--address", _ray_address(address, profile),
-        "--port", str(port),
-    ]
-    if no_auth:
-        cmd.append("--no-auth")
-    if serve:
-        cmd.append("--serve")
-    if not no_open:
-        cmd.append("--open")
-    raise typer.Exit(_run(cmd))
+def _server_unsupported(cmd: str) -> None:
+    typer.secho(f"server 模式暂不支持 `lab job {cmd}`，请用 Web 控制台操作。", fg=typer.colors.YELLOW)
+    raise typer.Exit(2)
 
 
 @job_app.command("list", help="列出集群作业（精简表格）")
@@ -1124,6 +1200,10 @@ def job_list(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-list")
+    if cli_login.is_server_mode():
+        _server_jobs_table(cli_login.list_my_jobs(limit=200 if all_jobs else 15))
+        raise typer.Exit(0)
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
            "--address", _ray_address(address, profile)]
     if all_jobs:
@@ -1138,6 +1218,10 @@ def job_logs(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-logs")
+    if cli_login.is_server_mode():
+        cli_login.stream_logs_via_server(job_id)
+        raise typer.Exit(0)
     args = ["logs", job_id]
     if follow:
         args.append("--follow")
@@ -1151,6 +1235,9 @@ def job_samples(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-samples")
+    if cli_login.is_server_mode():
+        _server_unsupported("samples")
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "job_samples.py"),
            job_id, "--address", _ray_address(address, profile)]
     if last:
@@ -1164,6 +1251,15 @@ def job_status(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-status")
+    if cli_login.is_server_mode():
+        match = [j for j in cli_login.list_my_jobs(limit=200)
+                 if job_id in (j.get("ray_submission_id") or "", j.get("lab_run_id") or "")]
+        if not match:
+            typer.secho(f"未找到作业 {job_id}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        _server_jobs_table(match)
+        raise typer.Exit(0)
     raise typer.Exit(_ray_job(["status", job_id], _ray_address(address, profile)))
 
 
@@ -1173,6 +1269,11 @@ def job_stop(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-stop")
+    if cli_login.is_server_mode():
+        res = cli_login.job_control_via_server("stop", job_id)
+        typer.secho(f"✓ stop: {res}", fg=typer.colors.GREEN)
+        raise typer.Exit(0)
     raise typer.Exit(_ray_job(["stop", job_id], _ray_address(address, profile)))
 
 
@@ -1182,6 +1283,11 @@ def job_delete(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-delete")
+    if cli_login.is_server_mode():
+        res = cli_login.job_control_via_server("delete", job_id)
+        typer.secho(f"✓ delete: {res}", fg=typer.colors.GREEN)
+        raise typer.Exit(0)
     raise typer.Exit(_ray_job(["delete", job_id], _ray_address(address, profile)))
 
 
@@ -1191,6 +1297,9 @@ def job_clean(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-clean")
+    if cli_login.is_server_mode():
+        _server_unsupported("clean")
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
            "--address", _ray_address(address, profile), "--clean"]
     if yes:
@@ -1204,6 +1313,9 @@ def job_cancel_all(
     address: Optional[str] = _ADDR_OPT,
     profile: Optional[str] = _PROF_OPT,
 ) -> None:
+    cli_login.gate("job-cancel-all")
+    if cli_login.is_server_mode():
+        _server_unsupported("cancel-all")
     cmd = ["uv", "run", "--extra", "submit", "python", str(SCRIPTS / "ray_jobs.py"),
            "--address", _ray_address(address, profile), "--cancel-all"]
     if yes:
@@ -1328,6 +1440,14 @@ def cluster_down(
         typer.secho(f"[stop] {h}", bold=True)
         rc |= _run(cmd) if not dry_run else (typer.echo("› " + " ".join(cmd)) or 0)
     raise typer.Exit(rc)
+
+
+# ----------------------------- 中心化 Lab 服务：登录/身份/配额 -----------------------------
+app.command(help="登录中心化 Lab 服务（--server 指定地址；未登录的集群命令会自动跳浏览器认证）")(cli_login.login)
+app.command(help="登出：吊销 refresh 并清除本地凭据")(cli_login.logout)
+app.command(help="显示当前登录身份 / 角色 / 配额")(cli_login.whoami)
+app.command(help="查看配额与实时用量")(cli_login.quota)
+app.add_typer(cli_login.admin_app, name="admin")
 
 
 if __name__ == "__main__":

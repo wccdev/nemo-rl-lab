@@ -226,16 +226,11 @@ SwanLab 只有**指标曲线**，不含模型实际输出的 token。
 `train/avg_turns_per_sample`（平均轮数）。
 > ⚠️ 自定义环境 `global_post_process_and_metrics` 返回的指标（如 `tool_agent_success_rate`）在当前 NeMo-RL 的 GRPO 流程里**不会被记录**，别去 SwanLab 找它，用上面的 `validation/accuracy` 即可。
 
-**再看具体生成内容（含工具调用）**，有四种方式：
+**再看具体生成内容（含工具调用）**，有三种方式：
 
-0. **NeMo-RL Lab Console**（推荐）：
-   ```bash
-   pnpm -C web build              # 可选；lab web 会自动构建
-   lab web                        # 本机默认免登；缺 dist 或 src 改动时自动 pnpm build
-   lab web --no-open --port 8080  # 开发时配合 pnpm -C web dev（:5173 代理 /api）
-   ```
-   功能：概览(GPU+台账)、作业详情(ECharts 曲线+验证样本)、多实验对比、实验列表、登录(团队模式)。
-   设计：IBM Plex + 浅/深双主题，见 `design-system/nemo-rl-lab-console/MASTER.md`。
+> Web 控制台（概览/曲线/验证样本/多实验对比）已拆到独立的中心化服务 **nemo-rl-server**（鉴权+配额+监控）。
+> 接入后用 `lab login --server <addr>`，浏览器看面板；本仓库只保留 CLI 取数能力。
+
 1. **本地抽取验证轨迹**（命令行，无需登集群）：
    ```bash
    lab job samples <job_id>            # 全部验证的样本面板
