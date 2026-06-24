@@ -4,14 +4,14 @@
 # （task_name=qa，读取 env.qa.cfg）。数据走 run.py 自建 Dataset，不用 ResponseDataset。
 #
 # ★ 对比实验【实验一 / baseline】：单轮、无工具——模型直接答题，环境判分即结束。
-#   对照组【实验二 / treatment】= grpo_qwen3.5-9b_qa-rl-agent_v1（多轮 + 知识库检索工具）。
-#   两者共用同一数据集 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是「能否多轮调用知识库工具」。
+#   对照组【实验二 / treatment】= grpo_qwen3.5-9b_qa-rl-agent_v1（多轮 + 本地文档检索工具）。
+#   两者共用同一数据集 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是「能否多轮检索本地资料」。
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-9b.yaml
-  - ../../configs/base/grpo_megatron.yaml   # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
-  - ../../configs/base/grpo_lora.yaml       # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
-  - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
+  - ../../configs/base/grpo_lora.yaml # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
+  # - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 # ══════════════════════════════════════════════════════════════════════════
 #  调参速查 —— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
@@ -33,10 +33,10 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  max_total_sequence_length: 1536      # 多选题带选项较长（比数学题略大）；seq 不要再降（降会截断答案，踩过坑）
+  max_total_sequence_length: 1536 # 多选题带选项较长（比数学题略大）；seq 不要再降（降会截断答案，踩过坑）
   # ⚠️ GB10 统一内存：g=8/gbs=32 时 1536 长度的啰嗦生成内存逐步爬高，step 32 被 Ray OOM 杀掉。
   #    每步样本数减半（g 8→4、gbs 32→16、gen_bs 16→8）压住内存峰值，reward 信号略噪但仍稳步上升。
-  train_global_batch_size: 16          # = num_prompts_per_step * num_generations_per_prompt（4×4）
+  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4）
   generation_batch_size: 8
   generation:
     # ⚠️ 踩坑记录（别再动这两个值）：
@@ -48,15 +48,15 @@ policy:
     max_new_tokens: 1536
 
 grpo:
-  num_prompts_per_step: 4              # GB10 实测小 batch
-  num_generations_per_prompt: 4        # 8→4 防 host-RAM OOM（GRPO LOO 基线 4 样本仍有效）
-  max_rollout_turns: 1                 # 单轮：答一道题，环境判分即结束
-  max_num_steps: 300                   # 这类任务 ~100-200 步即收敛，500 多为空转；val_at_end 兜底
+  num_prompts_per_step: 4 # GB10 实测小 batch
+  num_generations_per_prompt: 4 # 8→4 防 host-RAM OOM（GRPO LOO 基线 4 样本仍有效）
+  max_rollout_turns: 1 # 单轮：答一道题，环境判分即结束
+  max_num_steps: 300 # 这类任务 ~100-200 步即收敛，500 多为空转；val_at_end 兜底
   val_period: 50
   val_at_start: true
   val_at_end: true
   max_val_samples: 128
-  val_batch_size: 64                   # <= max_val_samples
+  val_batch_size: 64 # <= max_val_samples
 
 loss_fn:
   reference_policy_kl_penalty: 0.01 # 贴原模型力度；0=纯追奖励易退化，过大学不动
@@ -69,7 +69,9 @@ data:
   input_key: query
   output_key: expected_answer
   system_prompt: null
-  # data_dir: /abs/path/to/datasets/qa_rl   # 可选；一般用 QA_RL_DATA_DIR 更便携
+  # 题库在集群共享盘的绝对路径（容器内可达）。私有题库不随包上传（.gitignore），故在此显式指定；
+  # run.py 优先用服务端注入的环境变量 QA_RL_DATA_DIR，没有才用这里。
+  data_dir: /data/datasets/qa_rl
 
 # 自定义判分环境；_override_ 整段替换基底的 env（math）。
 env:
@@ -85,7 +87,7 @@ logger:
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
-  num_val_samples_to_print: 16  # 每次验证把 16 条完整对话(含生成 token)打印到作业日志(ray job logs)；Web 面板分页查看
+  num_val_samples_to_print: 16 # 每次验证把 16 条完整对话(含生成 token)打印到作业日志(ray job logs)；Web 面板分页查看
   swanlab:
     project: "qa-rl-compare" # 与实验二同 project，便于在 SwanLab 同图对比两条曲线
     name: "baseline-singleturn-notool"

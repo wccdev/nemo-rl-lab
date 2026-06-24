@@ -1,42 +1,18 @@
-"""训练后闭环测试：cli 的 runtime_env 密钥分流 + 集群侧 post_train.sh 的 step/后端逻辑（干跑）。"""
+"""训练后闭环测试：集群侧 post_train.sh 的 step 发现 / 后端检测逻辑（干跑）。
+
+runtime_env 的组装与密钥分流已上移到中心化服务端，不再由本机 CLI 处理，故此处只覆盖
+集群侧脚本本身的行为。
+"""
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from nemo_rl_lab import cli
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POST_TRAIN = REPO_ROOT / "scripts" / "post_train.sh"
-
-
-# --------------------------- runtime_env 密钥分流 ---------------------------
-def test_post_runtime_env_forwards_secret_by_default():
-    merged = {"OUTPUT_ROOT": "/data/runs", "HF_TOKEN": "hf-secret", "RUN_USER": "alice"}
-    re = json.loads(cli._build_post_runtime_env(merged, "/opt/nemo-rl", "h100", "rid", "alice"))
-    ev = re["env_vars"]
-    assert ev["NEMO_RL_DIR"] == "/opt/nemo-rl"
-    assert ev["HF_TOKEN"] == "hf-secret"  # 未配 secrets 文件 → 兜底明文转发
-    assert ev["NRL_RUN_ID"] == "rid"
-    assert "CLUSTER_SECRETS_FILE" not in ev
-
-
-def test_post_runtime_env_secrets_file_hides_secret():
-    merged = {"HF_TOKEN": "hf-secret", "CLUSTER_SECRETS_FILE": "/data/secrets.env"}
-    re = json.loads(cli._build_post_runtime_env(merged, "/opt/nemo-rl", "h100", "rid", "bob"))
-    ev = re["env_vars"]
-    assert ev["CLUSTER_SECRETS_FILE"] == "/data/secrets.env"
-    assert "HF_TOKEN" not in ev  # 配了 secrets 文件 → 不明文转发
-
-
-def test_post_runtime_env_excludes_outputs_and_secrets():
-    re = json.loads(cli._build_post_runtime_env({}, "/opt/x", "h100", "rid", "u"))
-    assert "**/outputs/**" in re["excludes"]
-    assert "cluster/*/submit.env" in re["excludes"]
 
 
 # --------------------------- post_train.sh 干跑（step 发现 + 后端检测）---------------------------

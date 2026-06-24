@@ -1,18 +1,18 @@
-# 题库「多轮 + 知识库检索」Agent GRPO 实验：qwen3.5-9b 在自有技术培训考题上做强化训练。
+# 题库「多轮 + 本地文档检索」Agent GRPO 实验：qwen3.5-9b 在自有技术培训考题上做强化训练。
 # 继承官方单轮基底 grpo_math_1B + qwen3.5-9b 片段，只写差异。
-# 奖励是自定义环境 QAKBAgentEnv（common/environments/qa_kb_agent_env.py），由本目录 run.py 实例化
-# （task_name=qa_kb，读取 env.qa_kb.cfg）。最终判分复用 common/rewards 的 qa 奖励（与单轮实验同源）。
+# 奖励是自定义环境 QADocsAgentEnv（common/environments/qa_docs_agent_env.py），由本目录 run.py 实例化
+# （task_name=qa_docs，读取 env.qa_docs.cfg）。最终判分复用 common/rewards 的 qa 奖励（与单轮实验同源）。
 #
-# ★ 对比实验【实验二 / treatment】：多轮、可调用 <search> 检索外部知识库再作答。
+# ★ 对比实验【实验二 / treatment】：多轮、可调用 <search> 在集群容器内 grep 本地资料（/data/docs 下 markdown）再作答。
 #   对照基线【实验一 / baseline】= grpo_qwen3.5-9b_qa-rl_v1（单轮、无工具）。
-#   两者共用同一数据集 / 模型 / LoRA / batch / 裁判奖励，唯一差异是「能否多轮检索知识库」。
-#   ⚠️ 知识库搭建中：未配 KB_BASE_URL 时 <search> 返回占位提示，流程可跑通但拿不到真实资料。
+#   两者共用同一数据集 / 模型 / LoRA / batch / 裁判奖励，唯一差异是「能否多轮检索本地资料」。
+#   ⚠️ 资料目录由 DOCS_DIR 控制（默认 /data/docs）；目录不存在时 <search> 返回占位提示，流程可跑通但拿不到资料。
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-9b.yaml
-  - ../../configs/base/grpo_megatron.yaml   # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
-  - ../../configs/base/grpo_lora.yaml       # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
-  - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
+  - ../../configs/base/grpo_lora.yaml # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
+  # - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 # ══════════════════════════════════════════════════════════════════════════
 #  调参速查 —— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
@@ -22,7 +22,7 @@ defaults:
 #  lr / dim / alpha                       默认来自 grpo_lora 基底(lr 1e-4 / dim8 / alpha16)
 #  reference_policy_kl_penalty (loss_fn)  贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏/退化
 #  num_generations_per_prompt (grpo)      每题采样数（组内基线）。多→梯度稳但更慢更吃显存
-#  max_rollout_turns / env.qa_kb.cfg.max_turns  多轮上限（两者须对齐）。多→更吃内存
+#  max_rollout_turns / env.qa_docs.cfg.max_turns  多轮上限（两者须对齐）。多→更吃内存
 #  max_total_sequence_length (policy)     上下文长度（对齐 baseline 1536，省内存）
 #  max_num_steps / val_period (grpo)      训多久 / 多久验证一次
 # ══════════════════════════════════════════════════════════════════════════
@@ -36,24 +36,24 @@ policy:
   # ⚠️ 与 baseline 完全相同的 1536：baseline 实测 1536 都会在 ~step280 被 Ray(host RAM) OOM；
   #    agent 多轮每步堆更多 rollout 进内存，2048 必崩且崩更早。故 seq 也对齐 1536——
   #    既最省内存，又让两实验唯一变量就是「多轮+检索」，对比最干净。
-  #    为塞进 1536 不截断：已把 max_turns 收到 3、KB_MAX_CHARS 收到 500（见下 / submit.env）。
-  #    仍 OOM 再降：env.qa_kb.cfg.max_turns→2、KB_MAX_CHARS→400、seq→1280（batch 已最低，勿动）。
+  #    为塞进 1536 不截断：已把 max_turns 收到 3、DOCS_MAX_CHARS 收到 500（见下 env.qa_docs.cfg）。
+  #    仍 OOM 再降：env.qa_docs.cfg.max_turns→2、DOCS_MAX_CHARS→400、seq→1280（batch 已最低，勿动）。
   max_total_sequence_length: 1536
-  train_global_batch_size: 16          # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
+  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
   generation_batch_size: 8
   generation:
-    max_new_tokens: 512                # 每轮生成上限：一次检索查询很短，作答留足空间
+    max_new_tokens: 512 # 每轮生成上限：一次检索查询很短，作答留足空间
 
 grpo:
-  num_prompts_per_step: 4              # 与 baseline 一致
-  num_generations_per_prompt: 4        # 与 baseline 严格一致（baseline 因 GB10 OOM 降到了 4）
-  max_rollout_turns: 3                 # 多轮：最多 3 轮（典型 1 次检索 + 作答）；收紧以省内存、塞进 1536
-  max_num_steps: 300                   # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
+  num_prompts_per_step: 4 # 与 baseline 一致
+  num_generations_per_prompt: 4 # 与 baseline 严格一致（baseline 因 GB10 OOM 降到了 4）
+  max_rollout_turns: 3 # 多轮：最多 3 轮（典型 1 次检索 + 作答）；收紧以省内存、塞进 1536
+  max_num_steps: 300 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
   val_period: 50
   val_at_start: true
   val_at_end: true
   max_val_samples: 128
-  val_batch_size: 64                   # <= max_val_samples
+  val_batch_size: 64 # <= max_val_samples
 
 loss_fn:
   reference_policy_kl_penalty: 0.01 # 贴原模型力度；0=纯追奖励易退化，过大学不动
@@ -65,24 +65,26 @@ data:
   input_key: query
   output_key: expected_answer
   system_prompt: null
-  # data_dir: /abs/path/to/datasets/qa_rl   # 可选；一般用 QA_RL_DATA_DIR 更便携
+  # 题库在集群共享盘的绝对路径（容器内可达）。私有题库不随包上传（.gitignore），故在此显式指定；
+  # run.py 优先用服务端注入的环境变量 QA_RL_DATA_DIR，没有才用这里。
+  data_dir: /data/datasets/qa_rl
 
 # 自定义多轮检索判分环境；_override_ 整段替换基底的 env（math）。
 env:
   _override_: true
-  qa_kb:
+  qa_docs:
     cfg:
       # true：简答题最终答案用裁判 LLM（需 JUDGE_* 环境变量；连不上自动回退关键词覆盖率）
       # false：全部走规则判分，零成本、无需裁判端点。与 baseline 必须一致才公平。
       use_judge: true
-      max_turns: 3                     # 与 grpo.max_rollout_turns 对齐
+      max_turns: 3 # 与 grpo.max_rollout_turns 对齐
 
 logger:
   wandb_enabled: false
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
-  num_val_samples_to_print: 16         # 每次验证把 16 条完整多轮对话(含检索)打印到作业日志；Web 面板分页查看
+  num_val_samples_to_print: 16 # 每次验证把 16 条完整多轮对话(含检索)打印到作业日志；Web 面板分页查看
   swanlab:
-    project: "qa-rl-compare"           # 与实验一同 project，便于同图对比两条曲线
+    project: "qa-rl-compare" # 与实验一同 project，便于同图对比两条曲线
     name: "treatment-multiturn-kb"

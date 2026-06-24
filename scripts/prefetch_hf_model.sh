@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
 # 在【集群容器内】预下载 HuggingFace 模型到 HF_HOME，避免训练时在线拉取失败。
 #
-# 典型原因：submit.env 里设了 HF_ENDPOINT=hf-mirror.com，但容器连不上 mirror；
+# 典型原因：设了 HF_ENDPOINT=hf-mirror.com，但容器连不上 mirror；
 # 或集群无外网。解决：unset 镜像，在容器里先跑本脚本，再 lab submit。
 #
-# 用法（在 NeMo-RL 容器内，与 submit.env 同路径约定）：
-#   source cluster/submit.env   # 或 export HF_TOKEN HF_HOME
+# 用法（在 NeMo-RL 容器内，先导出所需环境变量）：
+#   export HF_TOKEN=...   HF_HOME=/path/to/hf_cache
 #   bash scripts/prefetch_hf_model.sh Qwen/Qwen3.5-4B
 #   bash scripts/prefetch_hf_model.sh Qwen/Qwen3.5-9B
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_ID="${1:?用法: prefetch_hf_model.sh <HF_REPO_ID>，如 Qwen/Qwen3.5-4B}"
-
-# 可选：从 submit.env / secrets.env 读 HF_TOKEN、HF_HOME
-for f in "${REPO_ROOT}/cluster/submit.env" "${REPO_ROOT}/cluster/secrets.env"; do
-  [[ -f "$f" ]] && { set -a; source "$f"; set +a; }
-done
 
 HF_HOME="${HF_HOME:-/home/aidenlu/nemo-rl-work/hf_cache}"
 export HF_HOME

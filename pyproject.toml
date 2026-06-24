@@ -10,21 +10,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 从本机提交作业到 Ray 集群（lab submit）所需的 Ray CLI（job submission 客户端）。
-# 仅是「客户端」，不含 GPU/训练栈；版本须对齐【你的集群】的 Ray，避免 job submission 协议不兼容。
-# 当前集群实测 Ray 2.55.1（dashboard /api/version 可查）。换集群若版本不同，改这里再 `uv sync --extra submit`。
-# 安装：uv sync --extra submit
-submit = ["ray[default]==2.55.1"]
-# 本地训练面板 lab web 的 HTTP 服务（FastAPI + uvicorn）。取数仍走 submit extra 的 ray，
-# 故 lab web 同时启用 submit + web 两个 extra。安装：uv sync --extra submit --extra web
-web = [
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
-    "pyyaml>=6",
-    "python-jose[cryptography]>=3.3",
-    "passlib[bcrypt]>=1.7",
-    "python-multipart>=0.0.9",
-]
 # 开发/CI：lint + 测试。安装：uv sync --extra dev
 dev = ["pytest>=8", "ruff>=0.5", "pyyaml>=6"]
 

@@ -17,8 +17,7 @@ GSM8K 的答案是「推理 + #### 数字」，需抽取干净金标准答案：
 lab prepare gsm8k                              # 写到 datasets/gsm8k/{train,val}.jsonl
 ```
 
-- **`lab submit`（Mac→集群）**：`datasets/gsm8k/` 随作业上传，`run.sh` 自动把 `GSM8K_DATA_DIR` 指向它，**无需手动 export**。
-- **`lab run`（集群容器内直跑）**：同样自动指向仓库内 `datasets/gsm8k/`；只有当你想用别处的数据时才需 `export GSM8K_DATA_DIR=/abs/dir` 覆盖。
+- **`lab submit`（经服务端到集群）**：`datasets/gsm8k/` 随作业上传，`run.sh` 自动把 `GSM8K_DATA_DIR` 指向它，**无需手动 export**；想用别处的数据时由服务端注入 `GSM8K_DATA_DIR=/abs/dir` 覆盖。
 
 ## 组成
 

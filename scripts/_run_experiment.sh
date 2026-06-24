@@ -4,9 +4,9 @@
 # 然后 `exec bash scripts/_run_experiment.sh "${EXP_DIR}"`。
 #
 # 入参：$1 = 实验目录绝对路径（EXP_DIR）。
-# 约定的可选环境变量（由各实验 run.sh / lab submit / submit.env 注入）：
+# 约定的可选环境变量（由各实验 run.sh / 中心化服务在集群侧注入）：
 #   ENTRY            训练入口（不设则：本目录有 run.py 用之，否则 examples/run_grpo.py）
-#   NEMO_RL_DIR      容器/本机 NeMo-RL 0.6.0 源码目录（必填）
+#   NEMO_RL_DIR      容器内 NeMo-RL 0.6.0 源码目录（必填）
 #   CLUSTER_PROFILE  硬件 profile（不设则读实验自带 cluster 文件，再兜底 gb10-spark）
 #   OUTPUT_ROOT      产物根目录（不设则落到 EXP_DIR/outputs）；RUN_USER 再做多人隔离
 set -euo pipefail
@@ -21,7 +21,7 @@ NEMO_RL_DIR="${NEMO_RL_DIR:?请设置 NEMO_RL_DIR 指向 NeMo-RL 0.6.0 源码目
 
 # 硬件 profile：默认读本实验绑定的集群（同目录 cluster 文件，可选 cluster/ 下 h100 | gb10-spark | b300）。
 # 本实验超参（batch/seq/LoRA/并行度/显存）都是按该集群的卡调出来的，换卡通常要重调。
-# 优先级：环境 CLUSTER_PROFILE（lab submit 注入 / --profile）> 自带 cluster 文件 > gb10-spark 兜底。
+# 优先级：环境 CLUSTER_PROFILE（服务端注入 / --profile）> 自带 cluster 文件 > gb10-spark 兜底。
 if [[ -z "${CLUSTER_PROFILE:-}" && -f "${EXP_DIR}/cluster" ]]; then
   CLUSTER_PROFILE="$(tr -d '[:space:]' < "${EXP_DIR}/cluster")"
 fi
@@ -42,8 +42,8 @@ read_conf() { [[ -f "$1" ]] && grep -vE '^[[:space:]]*(#|$)' "$1" || true; }
 OVERRIDES=()
 while IFS= read -r l; do [[ -n "$l" ]] && OVERRIDES+=("$l"); done < <(read_conf "${PROFILE_CONF}")
 # 产物（checkpoint + 每步样本 jsonl + 日志）落盘位置。
-# 远程 lab submit 时 EXP_DIR 在 Ray 上传的临时包目录里（训练结束被清理、不回传 Mac），
-# 故设 OUTPUT_ROOT（建议在 submit.env 配成集群持久路径/共享盘）后产物落到 OUTPUT_ROOT[/<用户>]/<实验名>。
+# 经服务端提交时 EXP_DIR 在 Ray 上传的临时包目录里（训练结束被清理、不回传本机），
+# 故由服务端注入 OUTPUT_ROOT（集群持久路径/共享盘）后产物落到 OUTPUT_ROOT[/<用户>]/<实验名>。
 # 多人共用平台时设 RUN_USER（如名字/工号），产物隔离到 OUTPUT_ROOT/<用户>/<实验名>，互不覆盖。
 if [[ -n "${OUTPUT_ROOT:-}" ]]; then OUT_DIR="${OUTPUT_ROOT%/}${RUN_USER:+/${RUN_USER}}/${EXP_NAME}"; else OUT_DIR="${EXP_DIR}/outputs"; fi
 OVERRIDES+=("checkpointing.checkpoint_dir=${OUT_DIR}")
@@ -57,24 +57,20 @@ echo "[run] config  : ${CONFIG}"
 echo "[run] version : run_id=${NRL_RUN_ID:-(直跑)} git=${NRL_GIT_COMMIT:-?}$([[ "${NRL_GIT_DIRTY:-0}" == 1 ]] && echo '+dirty') config=${NRL_CONFIG_SHA:-?}"
 echo "[run] cluster/产物 overrides:"; printf '          %s\n' "${OVERRIDES[@]}"
 
-# 集群侧预置密钥文件（容器内路径，由 submit.env 的 CLUSTER_SECRETS_FILE 指定并随作业转发其路径）。
+# 集群侧预置密钥文件（容器内路径，由中心化服务注入 CLUSTER_SECRETS_FILE 并随作业转发其路径）。
 # 配了它就不必把密钥明文塞进 runtime_env（不会暴露在 Ray dashboard）；密钥在此处 source 进作业进程。
 if [[ -n "${CLUSTER_SECRETS_FILE:-}" && -f "${CLUSTER_SECRETS_FILE}" ]]; then
   set -a; source "${CLUSTER_SECRETS_FILE}"; set +a
   echo "[run] secrets : sourced ${CLUSTER_SECRETS_FILE}"
 fi
 
-# 本地密钥/HF 配置（容器内直跑用；lab submit 路径由 runtime_env 注入，不依赖此文件）
-SECRETS_ENV="${REPO_ROOT}/cluster/secrets.env"
-[[ -f "${SECRETS_ENV}" ]] && { set -a; source "${SECRETS_ENV}"; set +a; }
-
 # 硬件/网络 env（NCCL、Ray 内存、PyTorch 分配）；多节点须与 ray start 用同一份
 [[ -f "${PROFILE_ENV}" ]] && source "${PROFILE_ENV}"
 
 # 数据目录：未显式设置 *_DATA_DIR 时，默认指向本仓库 datasets/<name>。
-# lab submit 时该目录随作业上传（submit_job.sh 仅排除 raw/data 缓存），
+# 经服务端提交时该目录随作业上传（仅排除 raw/data 缓存），
 # 故 config 里的 ${oc.env:GSM8K_DATA_DIR} 等无需手填即可解析；
-# 想用集群上已有的大数据，则在 submit.env / secrets.env 显式设置同名变量覆盖。
+# 想用集群上已有的大数据，则由服务端注入同名变量覆盖（或在 config.yaml 写死 data_dir）。
 for _ds in gsm8k:GSM8K_DATA_DIR alpaca:ALPACA_DATA_DIR qa_rl:QA_RL_DATA_DIR; do
   _name="${_ds%%:*}"; _var="${_ds##*:}"
   if [[ -z "${!_var:-}" && -d "${REPO_ROOT}/datasets/${_name}" ]]; then

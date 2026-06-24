@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-# 题库「多轮 + 知识库检索」Agent GRPO 训练脚本（NeMo-RL 0.6.0）。
+# 题库「多轮 + 本地文档检索」Agent GRPO 训练脚本（NeMo-RL 0.6.0）。
 #
 # 这是与单轮 baseline（grpo_qwen3.5-9b_qa-rl_v1）做 A/B 对比的【对照组 / treatment】：
 #   同一份题库数据 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是——
-#   模型回答前可以**多轮调用 <search> 检索外部知识库**再作答（见 common/environments/qa_kb_agent_env.py）。
+#   模型回答前可以**多轮调用 <search> 在集群容器内 grep 本地资料**（/data/docs 下的 markdown）再作答
+#   （见 common/environments/qa_docs_agent_env.py）。
 #
 # 数据：datasets/qa_rl 的 train/val jsonl（每行 {"query", "expected_answer": "[type] ..."}），与 baseline 完全一致；
-#       本脚本只在 query 前**加一段"可检索知识库"的说明**，答案格式仍沿用题目里的 \boxed{}。
+#       本脚本只在 query 前**加一段"可检索本地资料"的说明**，答案格式仍沿用题目里的 \boxed{}。
 import argparse
 import json
 import os
@@ -34,21 +35,21 @@ from nemo_rl.utils.config import (
 )
 from nemo_rl.utils.logger import get_next_experiment_dir
 
-from common.environments.qa_kb_agent_env import QAKBAgentEnv
+from common.environments.qa_docs_agent_env import QADocsAgentEnv
 
-TASK_NAME = "qa_kb"
+TASK_NAME = "qa_docs"
 STOP_STRINGS = ["</search>"]  # 生成到 </search> 即停，让环境返回检索结果；直接作答则生成到 EOS
 
-# 在原题面前加这段说明，告诉模型「可多轮检索知识库」；答案格式仍由题目自带的 \boxed{} 指令决定。
-KB_PREAMBLE = (
-    "你可以在回答前多轮检索公司知识库来获取依据：\n"
-    "需要检索时，输出 <search>查询词</search>，系统会返回相关资料；可多次检索。\n"
+# 在原题面前加这段说明，告诉模型「可多轮检索本地资料」；答案格式仍由题目自带的 \boxed{} 指令决定。
+DOCS_PREAMBLE = (
+    "你可以在回答前多轮检索公司技术资料库来获取依据：\n"
+    "需要检索时，输出 <search>关键词</search>，系统会用 grep 在资料库里查并返回相关片段；可多次换关键词检索。\n"
     "拿到资料后，按题目要求作答（答案格式见题目）。资料不足或无需检索也可直接作答。\n\n"
 )
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="题库多轮+知识库检索 GRPO 训练")
+    parser = argparse.ArgumentParser(description="题库多轮+本地文档检索 GRPO 训练")
     parser.add_argument("--config", type=str, default=None, help="YAML 配置路径")
     args, overrides = parser.parse_known_args()
     return args, overrides
@@ -64,8 +65,8 @@ def _read_jsonl(path: str) -> list[dict]:
     return rows
 
 
-class QAKBJsonlDataset(Dataset):
-    """读题库 jsonl，转成多轮 KB Agent 的 DatumSpec（query 前加检索说明）。"""
+class QADocsJsonlDataset(Dataset):
+    """读题库 jsonl，转成多轮本地文档检索 Agent 的 DatumSpec（query 前加检索说明）。"""
 
     def __init__(self, path: str, tokenizer, input_key: str, output_key: str,
                  max_turns: int, system_prompt: str | None = None):
@@ -87,7 +88,7 @@ class QAKBJsonlDataset(Dataset):
         chat: list[dict[str, str]] = []
         if self.system_prompt:
             chat.append({"role": "system", "content": self.system_prompt})
-        chat.append({"role": "user", "content": KB_PREAMBLE + query})
+        chat.append({"role": "user", "content": DOCS_PREAMBLE + query})
 
         prompt_text = self.tokenizer.apply_chat_template(
             chat, tokenize=False, add_generation_prompt=True, add_special_tokens=False
@@ -150,6 +151,7 @@ def main():
         raise SystemExit(
             "未指定数据目录。请先把题库放到集群并 `export QA_RL_DATA_DIR=<cluster>/datasets/qa_rl`。"
         )
+    # 提示：本地资料检索目录由环境变量 DOCS_DIR 控制（默认 /data/docs），须从集群容器内可达。
     input_key = data_cfg.get("input_key", "query")
     output_key = data_cfg.get("output_key", "expected_answer")
     system_prompt = data_cfg.get("system_prompt") or None
@@ -157,17 +159,17 @@ def main():
     env_cfg = config.env[TASK_NAME]["cfg"]
     max_turns = int(env_cfg.get("max_turns", config.grpo["max_rollout_turns"]))
 
-    train_dataset = QAKBJsonlDataset(
+    train_dataset = QADocsJsonlDataset(
         os.path.join(data_dir, "train.jsonl"), tokenizer, input_key, output_key,
         max_turns, system_prompt,
     )
-    val_dataset = QAKBJsonlDataset(
+    val_dataset = QADocsJsonlDataset(
         os.path.join(data_dir, "val.jsonl"), tokenizer, input_key, output_key,
         max_turns, system_prompt,
     )
     print(f"训练集 {len(train_dataset)} 条，验证集 {len(val_dataset)} 条（每条可多轮检索，max_turns={max_turns}）")
 
-    env = QAKBAgentEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
+    env = QADocsAgentEnv.options(num_gpus=0).remote(cfg=dict(env_cfg))
     task_to_env = {TASK_NAME: env}
 
     (

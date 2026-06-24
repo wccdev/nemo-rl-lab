@@ -5,10 +5,10 @@
 #
 # 继承官方多轮基底 + 模型 + 后端 + LoRA，只写差异（NeMo-RL 0.6.0 原生 defaults 机制）：
 defaults:
-  - ../../configs/base/grpo_sliding_puzzle.yaml   # 多轮拼图环境 + 多轮 rollout（自带，无外部依赖）
-  - ../../configs/models/qwen3.5-9b.yaml          # 9B 模型片段
-  - ../../configs/base/grpo_megatron.yaml         # Megatron-Core 后端（单卡 colocated；删此行回 DTensor）
-  - ../../configs/base/grpo_lora.yaml             # LoRA（单卡跑 9B 的关键；删此行=全参数，单卡几乎必 OOM）
+  - ../../configs/base/grpo_sliding_puzzle.yaml # 多轮拼图环境 + 多轮 rollout（自带，无外部依赖）
+  - ../../configs/models/qwen3.5-9b.yaml # 9B 模型片段
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端（单卡 colocated；删此行回 DTensor）
+  - ../../configs/base/grpo_lora.yaml # LoRA（单卡跑 9B 的关键；删此行=全参数，单卡几乎必 OOM）
 
 # ══════════════════════════════════════════════════════════════════════════
 #  调参速查 —— 你主要动下面【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
@@ -31,26 +31,26 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  max_total_sequence_length: 768   # 2x2 拼图轮次短，1024 够用；OOM 先降到 768
-  train_global_batch_size: 32        # 必须 = num_prompts_per_step × num_generations_per_prompt（4×8）
+  max_total_sequence_length: 768 # 2x2 拼图轮次短，1024 够用；OOM 先降到 768
+  train_global_batch_size: 32 # 必须 = num_prompts_per_step × num_generations_per_prompt（4×8）
   generation:
-    max_new_tokens: 256              # 多轮：限制每轮生成长度，给多轮留空间、省 KV
+    max_new_tokens: 256 # 多轮：限制每轮生成长度，给多轮留空间、省 KV
     vllm_cfg:
-      gpu_memory_utilization: 0.3    # 单卡与训练分时共用这张 H100；OOM 降到 0.3，富余可升到 0.5
+      gpu_memory_utilization: 0.5 # 单卡与训练分时共用这张 H100；OOM 降到 0.3，富余可升到 0.5
 
 grpo:
   num_prompts_per_step: 4
-  num_generations_per_prompt: 8      # 每题 8 条：组内有对有错→优势非零，GRPO 才有梯度
-  max_rollout_turns: 12              # 2x2 小拼图 12 轮足够走完（拼图调大要同步加大）
-  max_num_steps: 50                  # 先跑通、看 reward 抬头；要收敛再调大
-  val_period: 10                     # step 0/10/20/30/40/50 各验证一次
+  num_generations_per_prompt: 8 # 每题 8 条：组内有对有错→优势非零，GRPO 才有梯度
+  max_rollout_turns: 12 # 2x2 小拼图 12 轮足够走完（拼图调大要同步加大）
+  max_num_steps: 50 # 先跑通、看 reward 抬头；要收敛再调大
+  val_period: 10 # step 0/10/20/30/40/50 各验证一次
   val_at_start: true
   val_at_end: true
   max_val_samples: 16
-  val_batch_size: 16                 # <= max_val_samples
+  val_batch_size: 16 # <= max_val_samples
 
 loss_fn:
-  reference_policy_kl_penalty: 0.01  # 贴原模型力度；0=纯追奖励易退化，过大学不动
+  reference_policy_kl_penalty: 0.01 # 贴原模型力度；0=纯追奖励易退化，过大学不动
 
 # ────────────────────────── ② 一般不动（环境难度 / 日志）──────────────────────────
 # 滑块拼图环境（NeMo-RL 自带 sliding_puzzle_game）：把数字块滑到有序即拼好，奖励=1。
@@ -58,16 +58,16 @@ env:
   sliding_puzzle_game:
     cfg:
       game_config:
-        size: 2            # 2x2 最简拼图（先跑通）；想更难改 3（3x3，需同步加大 max_rollout_turns / seq）
-        shuffle_moves: 3   # 打乱步数，越大越难
-      max_moves: 12        # 单局最大步数，约等于 max_rollout_turns
+        size: 2 # 2x2 最简拼图（先跑通）；想更难改 3（3x3，需同步加大 max_rollout_turns / seq）
+        shuffle_moves: 3 # 打乱步数，越大越难
+      max_moves: 12 # 单局最大步数，约等于 max_rollout_turns
 
 logger:
   wandb_enabled: false
   tensorboard_enabled: false
   swanlab_enabled: true
   monitor_gpus: true
-  num_val_samples_to_print: 3        # 每次验证把 3 条完整多轮对话打印到作业日志（lab job logs / lab job samples）
+  num_val_samples_to_print: 3 # 每次验证把 3 条完整多轮对话打印到作业日志（lab logs / lab job logs）
   swanlab:
     project: "agent-grpo_qwen3.5-9b_sliding-puzzle_v1"
     name: "h100-lora-2x2-g8"

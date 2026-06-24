@@ -46,14 +46,9 @@
 ## 运行
 
 ```bash
-# 远程提交（推荐，全程在本机，经 VPN 连 H100；先配好 cluster/h100/submit.env 的 RAY_DASHBOARD_ADDRESS）
+# 提交到集群（经中心化服务，全程在本机；先 lab login 接入服务）
 uv run lab submit agent-grpo_qwen3.5-9b_sliding-puzzle_v1
-uv run lab job logs <job_id> -f        # 实时日志
-uv run lab job samples <job_id>        # 看多轮对话（每轮移动 + 棋面）
-uv run lab web                         # 本地面板：reward 曲线 + 验证对话
-
-# 或在 H100 容器内直接跑
-NEMO_RL_DIR=/opt/NeMo-RL CLUSTER_PROFILE=h100 bash experiments/agent-grpo_qwen3.5-9b_sliding-puzzle_v1/run.sh
+uv run lab logs <job_id>               # 实时日志（不给 job_id 跟随最近一个）
 ```
 
 > 前提：H100 容器里已装 NeMo-RL 0.6.0，且 `Qwen/Qwen3.5-9B-Base` 已缓存到 `HF_HOME`（或集群能直连 huggingface.co）。
