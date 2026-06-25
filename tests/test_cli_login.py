@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 
 import pytest
 
 from nemo_rl_lab import cli_login
+from nemo_rl_lab.client_device import collect_cli_device, encode_device_param
 
 
 def test_pkce_pair_self_consistent():
@@ -112,3 +114,21 @@ def test_git_provenance(tmp_path):
 
     (exp / "config.yaml").write_text("a: 2\n")  # 改动 → dirty
     assert cli_login.git_provenance(tmp_path, "experiments/demo_v1")["git_dirty"] is True
+
+
+def test_collect_cli_device():
+    info = collect_cli_device()
+    assert info["source"] == "lab-cli"
+    assert info["hostname"]
+    assert info["os"]
+    assert info.get("device_id")  # 16 hex chars
+    assert len(info["device_id"]) == 16
+
+
+def test_encode_device_roundtrip():
+    raw = encode_device_param(collect_cli_device())
+    assert raw
+    assert "=" not in raw
+    pad = "=" * (-len(raw) % 4)
+    data = json.loads(base64.urlsafe_b64decode(raw + pad))
+    assert data["source"] == "lab-cli"

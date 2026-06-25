@@ -372,6 +372,8 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
 
 def _browser_login(server: str, timeout: float = 180.0) -> dict:
+    from nemo_rl_lab.client_device import collect_cli_device, encode_device_param
+
     verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(16)
     httpd = HTTPServer(("127.0.0.1", 0), _CallbackHandler)
@@ -379,7 +381,10 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
     redirect_uri = f"http://127.0.0.1:{port}/callback"
     _CallbackHandler.result = {}
 
-    q = urllib.parse.urlencode({"redirect_uri": redirect_uri, "state": state, "challenge": challenge})
+    device = encode_device_param(collect_cli_device())
+    q = urllib.parse.urlencode(
+        {"redirect_uri": redirect_uri, "state": state, "challenge": challenge, "device": device},
+    )
     auth_url = f"{server}/cli/authorize?{q}"
     typer.echo(f"正在打开浏览器完成登录：{auth_url}")
     webbrowser.open(auth_url)
@@ -405,7 +410,12 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
 
     resp = _api(
         server, "POST", "/api/cli/token",
-        body={"code": res["code"], "verifier": verifier, "redirect_uri": redirect_uri},
+        body={
+            "code": res["code"],
+            "verifier": verifier,
+            "redirect_uri": redirect_uri,
+            "device": device,
+        },
     )
     return {
         "access_token": resp["access_token"],
