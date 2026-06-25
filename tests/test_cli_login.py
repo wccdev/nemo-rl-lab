@@ -52,6 +52,49 @@ def test_gate_requires_server(isolated_lab):
         cli_login.gate("submit")
 
 
+def test_prefer_device_flow_ssh(monkeypatch):
+    monkeypatch.delenv("LAB_DEVICE_FLOW", raising=False)
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_TTY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert cli_login.prefer_device_flow() is False
+    monkeypatch.setenv("SSH_CONNECTION", "127.0.0.1 12345 54321")
+    assert cli_login.prefer_device_flow() is True
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    assert cli_login.prefer_device_flow(force=True) is True
+
+
+def test_device_login_polls_until_token(isolated_lab, monkeypatch):
+    calls = {"n": 0}
+
+    def fake_http(server, method, path, *, body=None, timeout=10.0):
+        if path == "/api/cli/device/code":
+            return 200, {
+                "device_code": "dc",
+                "user_code": "ABCD-1234",
+                "verification_uri": "http://lab/cli/device",
+                "verification_uri_complete": "http://lab/cli/device?user_code=ABCD-1234",
+                "expires_in": 60,
+                "interval": 0,
+            }
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return 400, {"detail": "authorization_pending"}
+        return 200, {
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_in": 3600,
+            "user": {"username": "alice"},
+        }
+
+    monkeypatch.setattr(cli_login, "_http_json", fake_http)
+    monkeypatch.setattr(cli_login.time, "sleep", lambda _: None)
+    monkeypatch.setattr(cli_login.webbrowser, "open", lambda *_: None)
+    creds = cli_login._device_login("https://lab.x.com")
+    assert creds["access_token"] == "at"
+    assert calls["n"] == 2
+
+
 def test_get_access_token_valid_and_expired(isolated_lab):
     import time
 

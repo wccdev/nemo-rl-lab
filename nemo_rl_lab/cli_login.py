@@ -342,6 +342,92 @@ def batch_via_server(action: str, server: Optional[str] = None) -> dict:
         raise typer.BadParameter(f"{action} 失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
 
 
+# ----------------------------- 环境检测 / 设备码登录 -----------------------------
+def prefer_device_flow(*, force: bool = False, no_browser: bool = False) -> bool:
+    """SSH / 无图形环境优先走 RFC 8628 设备码流程。"""
+    if force or no_browser:
+        return True
+    if os.environ.get("LAB_DEVICE_FLOW", "").lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return True
+    return False
+
+
+def _http_json(server: str, method: str, path: str, *, body: Optional[dict] = None, timeout: float = 10.0) -> tuple[int, dict]:
+    """HTTP 请求并返回 (status, json)；不抛 HTTPError，便于轮询 pending。"""
+    url = f"{server}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read() or b"{}"
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {"detail": raw.decode(errors="ignore") or e.reason}
+        return e.code, payload
+
+
+def _device_login(server: str, timeout: float = 900.0) -> dict:
+    from nemo_rl_lab.client_device import collect_cli_device, encode_device_param
+
+    device = encode_device_param(collect_cli_device())
+    status, resp = _http_json(server, "POST", "/api/cli/device/code", body={"device": device})
+    if status != 200:
+        detail = resp.get("detail", resp)
+        raise typer.BadParameter(f"无法启动设备授权：{detail}")
+
+    device_code = resp["device_code"]
+    user_code = resp["user_code"]
+    verification_uri = resp.get("verification_uri_complete") or resp.get("verification_uri", f"{server}/cli/device")
+    interval = int(resp.get("interval", 5))
+    expires_at = time.time() + float(resp.get("expires_in", timeout))
+
+    typer.echo("")
+    typer.secho("请在任意设备的浏览器中完成 CLI 授权：", fg=typer.colors.YELLOW)
+    typer.echo(f"  1. 打开 {verification_uri}")
+    typer.secho(f"  2. 输入验证码：{user_code}", fg=typer.colors.CYAN, bold=True)
+    typer.echo("")
+
+    if not (os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")):
+        try:
+            webbrowser.open(verification_uri)
+        except Exception:
+            pass
+
+    while time.time() < expires_at:
+        time.sleep(interval)
+        status, tok = _http_json(server, "POST", "/api/cli/device/token", body={"device_code": device_code})
+        if status == 200:
+            return {
+                "access_token": tok["access_token"],
+                "refresh_token": tok.get("refresh_token"),
+                "expires_at": time.time() + tok.get("expires_in", 3600) - 60,
+                "user": tok.get("user"),
+            }
+        detail = tok.get("detail", "")
+        if detail == "authorization_pending":
+            continue
+        if detail == "slow_down":
+            interval = min(interval + 5, 60)
+            continue
+        raise typer.BadParameter(f"设备授权失败：{detail or status}")
+
+    raise typer.BadParameter("设备授权超时，请重试。")
+
+
+def _interactive_login(server: str, *, device_flow: bool = False, no_browser: bool = False) -> dict:
+    if prefer_device_flow(force=device_flow, no_browser=no_browser):
+        return _device_login(server)
+    return _browser_login(server)
+
+
 # ----------------------------- 回环登录流 -----------------------------
 class _CallbackHandler(BaseHTTPRequestHandler):
     result: dict = {}
@@ -438,8 +524,11 @@ def gate(command: str) -> None:
     token = get_access_token(server)
     if token:
         return
-    typer.secho(f"未登录 {server}，正在打开浏览器完成认证…", fg=typer.colors.YELLOW)
-    creds = _browser_login(server)
+    if prefer_device_flow():
+        typer.secho(f"未登录 {server}，请按终端提示完成设备码授权…", fg=typer.colors.YELLOW)
+    else:
+        typer.secho(f"未登录 {server}，正在打开浏览器完成认证…", fg=typer.colors.YELLOW)
+    creds = _interactive_login(server)
     _save_creds(server, creds)
     u = (creds.get("user") or {}).get("username", "?")
     typer.secho(f"✓ 已登录为 {u}", fg=typer.colors.GREEN)
@@ -449,8 +538,10 @@ def gate(command: str) -> None:
 def login(
     server: Optional[str] = typer.Option(None, "--server", "-s", help="Lab 服务地址，如 https://lab.company.com"),
     token: Optional[str] = typer.Option(None, "--token", help="非交互登录：直接用服务令牌（CI 用）"),
+    device_flow: bool = typer.Option(False, "--device-flow", help="强制使用设备码登录（SSH / 无浏览器）"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="不打开浏览器（等同 --device-flow）"),
 ) -> None:
-    """登录中心化 Lab 服务（未登录命令会自动跳转浏览器）。"""
+    """登录中心化 Lab 服务（SSH 环境自动走设备码；本机默认浏览器回环）。"""
     srv = current_server(server)
     if not srv:
         raise typer.BadParameter("未指定服务地址。用 `lab login --server https://lab.company.com`。")
@@ -464,7 +555,7 @@ def login(
             raise typer.BadParameter(f"服务令牌无效：{e}") from e
         _save_creds(srv, creds)
     else:
-        creds = _browser_login(srv)
+        creds = _interactive_login(srv, device_flow=device_flow, no_browser=no_browser)
         _save_creds(srv, creds)
     u = (creds.get("user") or {}).get("username", "?")
     typer.secho(f"✓ 已登录 {srv}（用户 {u}）", fg=typer.colors.GREEN)
