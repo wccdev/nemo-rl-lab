@@ -11,6 +11,50 @@ from nemo_rl_lab import cli_login
 from nemo_rl_lab.client_device import collect_cli_device, encode_device_param
 
 
+def test_parse_sse_stream_ignores_protocol_noise():
+    """SSE 解析：只取 log 事件原文，忽略 event/id/keepalive，多行 data 以 \\n 拼回。"""
+    raw = (
+        ': keepalive\n\n'
+        'event: open\n'
+        'data: {"status":"connected"}\n\n'
+        'event: log\n'
+        'id: 26454\n'
+        'data: (VllmGenerationWorker pid=1) INFO line A\n'
+        'data:     缩进的 line B\n'
+        'data:\n\n'  # 结尾空行 → 还原出末尾换行
+        ': keepalive\n\n'
+        'event: end\n'
+        'data:\n\n'
+    )
+    events = list(cli_login.parse_sse_stream(raw.splitlines(keepends=True)))
+    logs = [d for e, d in events if e == "log"]
+    assert logs == ["(VllmGenerationWorker pid=1) INFO line A\n    缩进的 line B\n"]
+    assert events[-1][0] == "end"
+    # 不会把 open 的 JSON 当成日志输出
+    assert all('"status":"connected"' not in d for e, d in events if e == "log")
+
+
+def test_parse_sse_stream_roundtrips_format_sse():
+    """与服务端 format_sse 配对：多行日志块编码→解析应还原原文。"""
+    def format_sse(data: str, *, event=None, event_id=None) -> str:  # 镜像 server/core/sse.py
+        lines = []
+        if event:
+            lines.append(f"event: {event}")
+        if event_id:
+            lines.append(f"id: {event_id}")
+        if data == "":
+            lines.append("data:")
+        else:
+            lines += [f"data: {ln}" for ln in data.split("\n")]
+        lines.append("")
+        return "\n".join(lines) + "\n"
+
+    chunk = "Step 1/300\n  reward=0.5\ntrailing\n"  # 含缩进与末尾换行
+    frame = format_sse(chunk, event="log", event_id="42")
+    events = list(cli_login.parse_sse_stream(frame.splitlines(keepends=True)))
+    assert events == [("log", chunk)]  # 精确还原（含 2 空格缩进与末尾换行）
+
+
 def test_pkce_pair_self_consistent():
     """CLI 生成的 verifier/challenge 自洽：challenge == base64url(sha256(verifier))，无填充。"""
     verifier, challenge = cli_login.pkce_pair()

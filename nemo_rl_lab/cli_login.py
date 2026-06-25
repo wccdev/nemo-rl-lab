@@ -288,17 +288,57 @@ def latest_job_via_server(server: Optional[str] = None) -> Optional[str]:
     return jobs[0].get("ray_submission_id") if jobs else None
 
 
+def parse_sse_stream(lines):
+    """把 SSE 字节/字符行流解析为 (event, data) 事件序列。
+
+    服务端按 SSE 协议发帧：`event:` / `id:` / `data:`，多行内容拆成多条 `data:` 行，
+    `: keepalive` 为注释心跳。规范要求：空行分发一个事件、data 多行以 \n 拼回、
+    冒号后仅去掉一个前导空格（保留日志缩进）。无 event 字段默认 "message"。
+    """
+    event = "message"
+    data_lines: list[str] = []
+    for raw in lines:
+        line = raw.decode(errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
+        line = line.rstrip("\r\n")
+        if line == "":  # 空行 = 事件结束
+            if data_lines:
+                yield event, "\n".join(data_lines)
+            event, data_lines = "message", []
+            continue
+        if line.startswith(":"):  # 注释（keepalive），忽略
+            continue
+        field, _, value = line.partition(":")
+        if value.startswith(" "):  # 仅去一个前导空格
+            value = value[1:]
+        if field == "event":
+            event = value
+        elif field == "data":
+            data_lines.append(value)
+        # id 等字段忽略
+    if data_lines:  # 末尾无空行兜底
+        yield event, "\n".join(data_lines)
+
+
 def stream_logs_via_server(job_id: str, server: Optional[str] = None) -> None:
-    """经服务端 SSE/流式接口跟随作业日志（客户端不直连 Ray）。"""
+    """经服务端 SSE 接口跟随作业日志（客户端不直连 Ray）。
+
+    只把 log 事件原文还原后打到 stdout，不暴露 event:/id:/data:/keepalive 等协议噪音。
+    """
     srv = current_server(server)
     if not srv:
         raise typer.BadParameter("未配置 Lab 服务。")
     path = f"/api/job/logs/stream?id={urllib.parse.quote(job_id)}"
     try:
         with _bearer_request(srv, "GET", path, timeout=None) as r:
-            for chunk in r:
-                sys.stdout.write(chunk.decode(errors="ignore"))
-                sys.stdout.flush()
+            for event, data in parse_sse_stream(r):  # urllib 响应按行迭代
+                if event == "log":
+                    sys.stdout.write(data)  # data 已按 \n 还原，含原始换行
+                    sys.stdout.flush()
+                elif event == "error":
+                    typer.secho(f"\n[日志流错误] {data}", fg=typer.colors.RED, err=True)
+                elif event == "end":
+                    break
+                # open / 其它事件：静默忽略
     except KeyboardInterrupt:
         typer.echo("\n(已停止跟随)")
     except urllib.error.HTTPError as e:
