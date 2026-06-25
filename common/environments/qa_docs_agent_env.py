@@ -5,8 +5,10 @@
 **最终判分复用同一套 qa 奖励**（客观题规则 / 简答题裁判 LLM），保证两实验唯一变量是「能否检索」。
 
 检索方式：在【集群训练进程】所在容器里，对 `DOCS_DIR`（默认 /data/docs，含子目录）下的
-**markdown 文件**跑 `grep`（递归、忽略大小写、带上下文行），把命中片段回灌给模型。
-之所以用 grep 而不是向量检索：零依赖、零外部服务、结果可解释，且贴合「在容器里 grep 查资料」的真实工作流。
+**markdown 文件**做检索，把命中片段回灌给模型。后端由 `DOCS_RETRIEVER` 选择：
+  - bm25（默认）：纯 Python 自实现的 BM25 相关度检索（进程内懒建倒排索引并缓存），带排序、抗 OCR 噪声；
+  - grep：`grep -rinI -F` 递归精确/分词 OR 召回（命中即返回、无排序）。
+两者都零外部依赖、零外部服务、结果可解释（回灌片段带文件名+行号），贴合「在容器里查本地资料」的真实工作流。
 
 协议（写进数据集 prompt，见实验 run.py）：
   - 检索资料： <search>关键词</search>            # 环境对本地 markdown 跑 grep，把命中片段作为 observation 回灌
@@ -19,11 +21,12 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
 import sys
-from typing import Any, Optional, TypedDict
+from typing import Any, Iterator, Optional, TypedDict
 
 import ray
 import torch
@@ -38,18 +41,23 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 
-# ============================ 本地文档检索工具（grep）============================
-# 在集群容器内对本地资料目录跑 grep。全部通过环境变量配置（由中心化服务在集群侧注入到作业）：
+# ============================ 本地文档检索工具（BM25 / grep）============================
+# 在集群容器内对本地资料目录检索。默认 BM25（带排序的相关度召回，比 grep「命中即返回」更准、抗 OCR 噪声）；
+# 也可切回 grep。全部通过环境变量配置（由中心化服务在集群侧注入到作业）：
+#   DOCS_RETRIEVER       检索后端：bm25（默认）| grep。bm25 纯 Python 自实现，零外部依赖、结果可解释。
 #   DOCS_DIR             资料根目录（含子目录），默认 /data/docs。目录不存在 → 返回占位提示（不抛异常）。
-#   DOCS_GLOB            只搜哪些文件（grep --include），默认 *.md（只搜 markdown）。
-#   DOCS_TOP_K           最多回灌几个命中片段（按文件聚合），默认 3。
-#   DOCS_CONTEXT_LINES   每个命中额外带几行上下文（grep -C），默认 2。
+#   DOCS_GLOB            只搜哪些文件，默认 *.md（只搜 markdown）。
+#   DOCS_TOP_K           最多回灌几个命中片段（grep 按文件聚合 / bm25 按 chunk），默认 3。
+#   DOCS_CONTEXT_LINES   [grep] 每个命中额外带几行上下文（grep -C），默认 2。
 #   DOCS_MAX_CHARS       单次检索回灌进上下文的总字符上限，默认 500（GB10 seq=1536 多轮防 host RAM OOM）。
-#   DOCS_MAX_PER_FILE    单个文件最多取几处命中（grep -m），默认 3，避免一个文件刷屏。
-#   DOCS_TIMEOUT         单次 grep 子进程超时（秒），默认 15。
-#   DOCS_OR_FALLBACK     整句精确匹配查不到时，是否再做「关键词分词 OR 召回」（默认 1 开；0 关）。
-#   DOCS_MAX_TERMS       OR 回退时最多用几个关键词（防止碎词把所有行都召回），默认 12。
+#   DOCS_MAX_PER_FILE    [grep] 单个文件最多取几处命中（grep -m），默认 3，避免一个文件刷屏。
+#   DOCS_TIMEOUT         [grep] 单次 grep 子进程超时（秒），默认 15。
+#   DOCS_OR_FALLBACK     [grep] 整句精确匹配查不到时，是否再做「关键词分词 OR 召回」（默认 1 开；0 关）。
+#   DOCS_MAX_TERMS       [grep] OR 回退时最多用几个关键词（防止碎词把所有行都召回），默认 12。
+#   DOCS_CHUNK_LINES     [bm25] 检索单元（chunk）大小：超长段落按多少行切窗，默认 12。
+#   BM25_K1 / BM25_B     [bm25] BM25 超参（词频饱和 / 文档长度归一化），默认 1.5 / 0.75。
 # ⚠️ 检索发生在【集群训练进程】（Ray actor）所在容器里，所以 DOCS_DIR 必须是【容器内】真实存在的路径。
+DOCS_RETRIEVER = os.environ.get("DOCS_RETRIEVER", "bm25").lower()
 DOCS_DIR = os.environ.get("DOCS_DIR", "/data/docs")
 DOCS_GLOB = os.environ.get("DOCS_GLOB", "*.md")
 DOCS_TOP_K = int(os.environ.get("DOCS_TOP_K", "3"))
@@ -59,6 +67,9 @@ DOCS_MAX_PER_FILE = int(os.environ.get("DOCS_MAX_PER_FILE", "3"))
 DOCS_TIMEOUT = float(os.environ.get("DOCS_TIMEOUT", "15"))
 DOCS_OR_FALLBACK = os.environ.get("DOCS_OR_FALLBACK", "1") not in ("0", "false", "False", "")
 DOCS_MAX_TERMS = int(os.environ.get("DOCS_MAX_TERMS", "12"))
+DOCS_CHUNK_LINES = int(os.environ.get("DOCS_CHUNK_LINES", "12"))
+BM25_K1 = float(os.environ.get("BM25_K1", "1.5"))
+BM25_B = float(os.environ.get("BM25_B", "0.75"))
 
 # 关键词分词用：英文/数字/缩写/型号（如 CMP、PVD、Qwen3.5）直接抽；中文按 2-gram 滑窗（无需 jieba 也能召回）。
 _ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+#/-]+")
@@ -96,6 +107,26 @@ def _tokenize(query: str) -> list[str]:
     return terms[:DOCS_MAX_TERMS]
 
 
+def _iter_terms(text: str) -> Iterator[str]:
+    """逐个产出关键词（**不去重、不截断**，全小写）——BM25 建索引数词频(tf)用。
+    分词规则与 _tokenize 完全一致（英文/型号正则；中文 ≤4 字整体、更长按 2-gram 跳停用字），
+    区别只是这里要保留重复出现以统计词频，且不限制数量。
+    """
+    for tok in _ASCII_TOKEN_RE.findall(text):
+        if len(tok) >= 2:
+            yield tok.lower()
+    for run in _ZH_RUN_RE.findall(text):
+        if len(run) <= 4:
+            if len(run) >= 2:
+                yield run.lower()
+        else:
+            for i in range(len(run) - 1):
+                bg = run[i:i + 2]
+                if bg[0] in _ZH_STOP or bg[1] in _ZH_STOP:
+                    continue
+                yield bg.lower()
+
+
 def _run_grep(terms: list[str]) -> tuple[int, str, str]:
     """对 DOCS_DIR 下的 markdown 跑一次 grep；多个 term 用多个 -e（固定字符串、OR 语义、无需转义正则）。
     返回 (returncode, stdout, stderr)；returncode<0 表示子进程异常（超时/缺 grep）。
@@ -116,18 +147,12 @@ def _run_grep(terms: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def docs_search(query: str) -> str:
+def _grep_search(query: str) -> str:
     """对本地 markdown 文档跑 grep，返回拼好的命中片段文本（失败/未命中返回提示，不抛异常）。
 
     两段式：先整句精确匹配（高精度）；查不到再把查询分词后做 OR 召回（高召回，DOCS_OR_FALLBACK 开关）。
-    换检索方式（如向量检索/全文索引），只改本函数即可，环境其余逻辑不变。
+    （调用方 docs_search 已做 query 规整与目录存在性检查。）
     """
-    query = " ".join((query or "").split())  # 折叠空白/去换行：让一次 grep 匹配单行更稳
-    if not query:
-        return "search 错误: 查询为空"
-    if not os.path.isdir(DOCS_DIR):
-        return f"（本地资料目录未接入：DOCS_DIR={DOCS_DIR} 不存在或不可访问。请联系管理员确认容器内已挂载资料。）"
-
     # 第一段：整句精确匹配（固定字符串）。
     rc, out, err = _run_grep([query])
     if rc == 0:
@@ -233,6 +258,147 @@ def _format_grep_output(raw: str, terms: list[str]) -> str:
     scored.sort(key=lambda x: (-x[0], x[1]))  # 命中多的文件优先；同分稳定（保持首次出现顺序）
     out_blocks = [b for _, _, b in scored[:DOCS_TOP_K]]
     return "\n---\n".join(out_blocks)[:DOCS_MAX_CHARS]
+
+
+# ============================ BM25 检索（纯 Python，零依赖）============================
+# grep 是「命中即返回」、无相关度排序，OCR 噪声文档下召回质量差（模型据此学到「检索没用」→ 放弃检索）。
+# BM25 给每个 chunk 算相关度分、取 Top-K，召回与排序都更稳，且仍是本地、零外部服务、结果可解释（带文件名+行号）。
+# 索引在 actor 进程内**懒构建一次并缓存**（训练期资料不变）；分词复用上面零依赖的 _iter_terms（含中文 2-gram）。
+class _Bm25Index:
+    """一个资料目录的 BM25 倒排索引。chunk = (相对路径, 起始行号, 该 chunk 的原始行列表)。"""
+
+    __slots__ = ("chunks", "postings", "idf", "doc_len", "avgdl", "n")
+
+    def __init__(self) -> None:
+        self.chunks: list[tuple[str, int, list[str]]] = []
+        self.postings: dict[str, list[tuple[int, int]]] = {}  # term -> [(chunk_id, tf), ...]
+        self.idf: dict[str, float] = {}
+        self.doc_len: list[int] = []
+        self.avgdl: float = 1.0
+        self.n: int = 0
+
+
+# 进程内缓存：DOCS_DIR -> 索引（None 占位表示「资料库为空」，避免反复重建）。
+_BM25_CACHE: dict[str, Optional[_Bm25Index]] = {}
+
+
+def _iter_doc_files() -> Iterator[str]:
+    """遍历 DOCS_DIR（含子目录）下匹配 DOCS_GLOB 后缀的文件。"""
+    suffix = DOCS_GLOB.replace("*", "")  # "*.md" -> ".md"
+    for root, _dirs, files in os.walk(DOCS_DIR):
+        for fn in files:
+            if not suffix or fn.endswith(suffix):
+                yield os.path.join(root, fn)
+
+
+def _split_chunks(path: str) -> list[tuple[str, int, list[str]]]:
+    """把一个文件切成检索单元：按空行分段；段落超过 DOCS_CHUNK_LINES 行再按窗口切。保留起始行号。"""
+    try:
+        raw = open(path, encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return []
+    lines = raw.splitlines()
+    base = DOCS_DIR.rstrip("/") + "/"
+    rel = path[len(base):] if path.startswith(base) else path
+
+    out: list[tuple[str, int, list[str]]] = []
+
+    def _emit(start_lno: int, buf: list[str]) -> None:
+        if not any(s.strip() for s in buf):
+            return
+        for off in range(0, len(buf), DOCS_CHUNK_LINES):
+            window = buf[off:off + DOCS_CHUNK_LINES]
+            if any(s.strip() for s in window):
+                out.append((rel, start_lno + off, window))
+
+    para: list[str] = []
+    para_start = 1
+    for i, ln in enumerate(lines, start=1):
+        if ln.strip() == "":
+            _emit(para_start, para)
+            para = []
+            para_start = i + 1
+        else:
+            if not para:
+                para_start = i
+            para.append(ln)
+    _emit(para_start, para)
+    return out
+
+
+def _build_bm25_index(docs_dir: str) -> Optional[_Bm25Index]:
+    """遍历资料目录，切 chunk、分词、建倒排与 IDF。资料为空返回 None。"""
+    idx = _Bm25Index()
+    for f in _iter_doc_files():
+        idx.chunks.extend(_split_chunks(f))
+    idx.n = len(idx.chunks)
+    if idx.n == 0:
+        return None
+
+    df: dict[str, int] = {}
+    idx.doc_len = [0] * idx.n
+    for cid, (_rel, _start, lines) in enumerate(idx.chunks):
+        tf: dict[str, int] = {}
+        for term in _iter_terms(" ".join(lines)):
+            tf[term] = tf.get(term, 0) + 1
+        idx.doc_len[cid] = sum(tf.values()) or 1
+        for term, c in tf.items():
+            idx.postings.setdefault(term, []).append((cid, c))
+            df[term] = df.get(term, 0) + 1
+
+    idx.avgdl = sum(idx.doc_len) / idx.n
+    # BM25 标准 IDF（带 +1 平滑，恒非负）。
+    idx.idf = {t: math.log(1 + (idx.n - n + 0.5) / (n + 0.5)) for t, n in df.items()}
+    return idx
+
+
+def _bm25_search(query: str) -> str:
+    """BM25 召回 Top-K chunk，拼成「【文件】Lxx: 内容」片段（与 grep 输出风格一致）。"""
+    if DOCS_DIR not in _BM25_CACHE:
+        _BM25_CACHE[DOCS_DIR] = _build_bm25_index(DOCS_DIR)
+    idx = _BM25_CACHE[DOCS_DIR]
+    if idx is None:
+        return "未检索到相关资料（资料库为空）"
+
+    q_terms = set(_iter_terms(query))  # query 一般短，每个 term 计一次贡献即可
+    scores: dict[int, float] = {}
+    for term in q_terms:
+        post = idx.postings.get(term)
+        if not post:
+            continue
+        w = idx.idf[term]
+        for cid, tf in post:
+            dl = idx.doc_len[cid]
+            denom = tf + BM25_K1 * (1 - BM25_B + BM25_B * dl / idx.avgdl)
+            scores[cid] = scores.get(cid, 0.0) + w * (tf * (BM25_K1 + 1)) / denom
+    if not scores:
+        return "未检索到相关资料（换个关键词再试）"
+
+    top = sorted(scores.items(), key=lambda kv: -kv[1])[:DOCS_TOP_K]
+    blocks: list[str] = []
+    for cid, _score in top:
+        rel, start, lines = idx.chunks[cid]
+        body = "\n".join(
+            f"L{start + j}: {ln.strip()}" for j, ln in enumerate(lines) if ln.strip()
+        )
+        blocks.append(f"【{rel}】\n{body}")
+    return "\n---\n".join(blocks)[:DOCS_MAX_CHARS]
+
+
+# ============================ 检索分派入口 ============================
+def docs_search(query: str) -> str:
+    """本地资料检索入口：按 DOCS_RETRIEVER 选 BM25（默认）或 grep。失败/未命中返回提示，不抛异常。
+
+    换检索方式（向量检索等），只在此分派即可，环境其余逻辑不变。
+    """
+    query = " ".join((query or "").split())  # 折叠空白/去换行
+    if not query:
+        return "search 错误: 查询为空"
+    if not os.path.isdir(DOCS_DIR):
+        return f"（本地资料目录未接入：DOCS_DIR={DOCS_DIR} 不存在或不可访问。请联系管理员确认容器内已挂载资料。）"
+    if DOCS_RETRIEVER == "grep":
+        return _grep_search(query)
+    return _bm25_search(query)
 
 
 # ============================ 元数据 / 文本解析 ============================
