@@ -319,15 +319,20 @@ def parse_sse_stream(lines):
         yield event, "\n".join(data_lines)
 
 
-def stream_logs_via_server(job_id: str, server: Optional[str] = None) -> None:
+def stream_logs_via_server(job_id: str, server: Optional[str] = None,
+                           tail: Optional[int] = None) -> None:
     """经服务端 SSE 接口跟随作业日志（客户端不直连 Ray）。
 
     只把 log 事件原文还原后打到 stdout，不暴露 event:/id:/data:/keepalive 等协议噪音。
+    tail 给定时只回放最后 N 行历史日志再跟随（None=全量）。
     """
     srv = current_server(server)
     if not srv:
         raise typer.BadParameter("未配置 Lab 服务。")
-    path = f"/api/job/logs/stream?id={urllib.parse.quote(job_id)}"
+    q = {"id": job_id}
+    if tail is not None:
+        q["tail"] = str(tail)
+    path = f"/api/job/logs/stream?{urllib.parse.urlencode(q)}"
     try:
         with _bearer_request(srv, "GET", path, timeout=None) as r:
             for event, data in parse_sse_stream(r):  # urllib 响应按行迭代

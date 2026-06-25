@@ -525,13 +525,16 @@ def status() -> None:
 @app.command(help="看作业日志：不给 job_id 默认跟随【最近一个】作业（经服务端转发）")
 def logs(
     job_id: Optional[str] = typer.Argument(None, help="作业 ID（见 lab job ls）；省略=最近一个"),
+    tail: Optional[int] = typer.Option(
+        None, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（省略=从头全量）"
+    ),
 ) -> None:
     cli_login.gate("logs")
     jid = job_id or cli_login.latest_job_via_server()
     if not jid:
         typer.secho("没有可跟随的作业（先 lab submit）。", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
-    cli_login.stream_logs_via_server(jid)
+    cli_login.stream_logs_via_server(jid, tail=tail)
 
 
 # ----------------------------- 作业管理（经服务端）-----------------------------
@@ -564,9 +567,12 @@ def job_ls(
 @job_app.command("logs", help="查看作业日志（实时跟随）")
 def job_logs(
     job_id: str = typer.Argument(..., help="作业 ID（见 lab job ls）"),
+    tail: Optional[int] = typer.Option(
+        None, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（省略=从头全量）"
+    ),
 ) -> None:
     cli_login.gate("job-logs")
-    cli_login.stream_logs_via_server(job_id)
+    cli_login.stream_logs_via_server(job_id, tail=tail)
 
 
 @job_app.command("status", help="查看作业状态")
