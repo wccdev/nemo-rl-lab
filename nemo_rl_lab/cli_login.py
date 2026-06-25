@@ -34,7 +34,7 @@ CRED_PATH = LAB_DIR / "credentials.json"
 
 # 需要登录才能用的集群类命令（server 模式下门控）；纯本地命令不在此列。
 GATED_COMMANDS = {
-    "submit", "export", "eval", "status", "logs",
+    "submit", "export", "eval", "status", "logs", "clean",
     "job-list", "job-logs", "job-samples", "job-status",
     "job-stop", "job-delete", "job-clean", "job-cancel-all",
 }
@@ -229,6 +229,20 @@ def submit_post_via_server(action: str, exp_rel: str, profile: Optional[str], fl
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="ignore")
         raise typer.BadParameter(f"{action} 提交失败 [{e.code}]：{detail}") from e
+
+
+def clean_via_server(exp_rel: str, server: Optional[str] = None) -> dict:
+    """server 模式：清理本实验在集群上的产物目录（checkpoint/日志），经服务端在集群侧删除。"""
+    srv = current_server(server)
+    if not srv:
+        raise typer.BadParameter("未配置 Lab 服务。")
+    path = f"/api/clean?exp={urllib.parse.quote(exp_rel)}"
+    try:
+        with _bearer_request(srv, "POST", path) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="ignore")
+        raise typer.BadParameter(f"清理失败 [{e.code}]：{detail}") from e
 
 
 def usage_via_server(server: Optional[str] = None) -> dict:
@@ -431,6 +445,7 @@ def _interactive_login(server: str, *, device_flow: bool = False, no_browser: bo
 # ----------------------------- 回环登录流 -----------------------------
 class _CallbackHandler(BaseHTTPRequestHandler):
     result: dict = {}
+    success_redirect: str = ""
 
     def do_GET(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
@@ -444,12 +459,18 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             "state": (qs.get("state") or [None])[0],
             "error": (qs.get("error") or [None])[0],
         }
+        redirect = type(self).success_redirect
+        if redirect and not type(self).result.get("error"):
+            self.send_response(302)
+            self.send_header("Location", redirect)
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(
             "<html><body style='font-family:sans-serif;text-align:center;margin-top:80px'>"
-            "<h2>✓ 登录成功</h2><p>已完成 CLI 授权，可关闭此页面回到终端。</p>"
+            "<h2>授权失败</h2><p>请关闭此页面并在终端重试 lab login。</p>"
             "</body></html>".encode()
         )
 
@@ -466,6 +487,7 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
     port = httpd.server_address[1]
     redirect_uri = f"http://127.0.0.1:{port}/callback"
     _CallbackHandler.result = {}
+    _CallbackHandler.success_redirect = f"{server.rstrip('/')}/cli/success"
 
     device = encode_device_param(collect_cli_device())
     q = urllib.parse.urlencode(

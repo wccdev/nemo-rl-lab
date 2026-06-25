@@ -25,6 +25,7 @@
     uv run lab status                              我的配额 / 用量 / 活跃作业
     uv run lab logs                                跟随最近一个作业的日志
     uv run lab job ls                              我的作业列表
+    uv run lab clean grpo_qwen3.5-9b_gsm8k_v1      清理该实验在集群上的产物目录（让同名实验下次从头训练）
     uv run lab export grpo_qwen3.5-9b_gsm8k_v1     把 checkpoint 转 HF（自适应 dcp/megatron），可 --push-repo 推 Hub
     uv run lab eval grpo_qwen3.5-9b_gsm8k_v1       对 checkpoint 跑独立评测（未给 --model 先自动导出）
     uv run lab runs                                我的提交历史（服务端台账）
@@ -237,6 +238,30 @@ def submit(
         fg=typer.colors.GREEN,
     )
     typer.echo(f"  跟随日志：lab logs {res.get('job_id')}")
+
+
+@app.command(
+    help="清理某实验在集群上的产物目录（checkpoint/日志），让同名实验下次从头训练。"
+    "经服务端在集群侧删除（fan-out 所有节点，兼容共享盘/本地盘）；本实验有活跃作业时会被拒绝。"
+)
+def clean(
+    exp: str = typer.Argument(..., autocompletion=_complete_exp, help="实验名或路径"),
+    yes: bool = typer.Option(False, "-y", "--yes", help="跳过确认"),
+) -> None:
+    cli_login.gate("clean")
+    exp_path = _resolve_exp(exp)
+    if not yes:
+        typer.confirm(
+            f"将删除集群上 {exp_path} 的产物目录（checkpoint/日志），不可恢复。确认清理？",
+            abort=True,
+        )
+    res = cli_login.clean_via_server(exp_path)
+    typer.secho(
+        f"✓ 已提交清理：job={res.get('job_id')}  目标={res.get('target')}"
+        + ("  [dry-run]" if res.get("dry_run") else ""),
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(f"  查看清理结果：lab logs {res.get('job_id')}")
 
 
 @app.command(help="提交前静态校验实验 config（batch 三者相等等；本地秒级，省得跑到集群才报错）")
