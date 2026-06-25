@@ -8,7 +8,11 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,3 +36,8 @@ jobs:
           uv run lab --help
           uv run lab ls
           uv run lab validate grpo_qwen3.5-4b_gsm8k_v1
+
+      - name: lab.cmd smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: lab.cmd --help

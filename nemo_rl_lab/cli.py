@@ -1,16 +1,17 @@
 """nemo-rl-lab 统一 CLI（Typer 实现）。
 
-所有操作都通过 `lab <子命令>` 执行；内部调用 scripts/ 与各实验脚本（单一事实来源）。
+所有操作都通过 `lab <子命令>` 执行；内部调用 nemo_rl_lab/ 与各实验脚本（集群侧 run.sh 仍在 Linux 容器执行）。
 本 CLI 是项目的命令入口（pyproject [project.scripts] lab = nemo_rl_lab.cli:app）。
 
 提交一律走【中心化 Lab 服务】：先 `lab login` 接入服务，`lab submit` 把工作目录打包上传，
 服务端注入密钥 / 路径 / 数据目录，并在集群上代理执行（Ray 地址、密钥都在服务端，本机不直连 Ray、
 不读任何 submit.env）。
 
-调用方式（任选）：
-    uv run lab ls            # 推荐：uv 自动同步项目环境再运行
-    ./lab ls                 # 仓库根的薄 shim，等价于上面那条
-    lab ls                   # `uv sync` 后 .venv/bin/lab 已存在；激活 venv 即可直接用
+    调用方式（任选）：
+    uv run lab ls            # 推荐：uv 自动同步项目环境再运行（macOS / Linux / Windows）
+    ./lab ls                 # macOS/Linux 薄 shim，等价于上面那条
+    lab.cmd ls               # Windows 薄 shim，等价于上面那条
+    lab ls                   # uv sync 后 venv 内 lab 已存在；激活 venv 即可直接用
 
 常用：
     uv run lab login --server https://lab.company.com   接入中心化服务（鉴权/配额/监控）
@@ -47,6 +48,8 @@ from typing import Optional
 import typer
 
 from nemo_rl_lab import cli_login
+from nemo_rl_lab.new_experiment import NewExperimentError, create_experiment
+from nemo_rl_lab.sync_base import SyncBaseError, sync_base_configs
 
 # 包位于 <repo>/nemo_rl_lab/，仓库根是上一级（editable 安装下 __file__ 指向源码）。
 ROOT = Path(__file__).resolve().parent.parent
@@ -164,15 +167,21 @@ def new(
 ) -> None:
     if from_exp and method is not Method.grpo:
         typer.secho("注：--from（fork）会继承来源实验的方法/配置，--method 被忽略。", fg=typer.colors.YELLOW)
-    cmd = ["bash", str(SCRIPTS / "new_experiment.sh"), kind.value, name]
-    # new_experiment.sh 位置参数： <kind> <name> [来源实验] [集群profile]；
-    # 只给 --cluster 时也要占住第 3 位（空串=空白模板），让 profile 落到第 4 位。
-    if from_exp or cluster:
-        cmd.append(_resolve_exp(from_exp) if from_exp else "")
-    if cluster:
-        cmd.append(cluster)
-    # method 经环境变量传给脚本（仅空白模板分支用），避免再加一个位置参数。
-    raise typer.Exit(_run(cmd, env={"LAB_METHOD": method.value}))
+    src = ""
+    if from_exp:
+        src = Path(_resolve_exp(from_exp)).name
+    try:
+        create_experiment(
+            ROOT,
+            kind.value,
+            name,
+            src=src,
+            cluster=cluster or "",
+            method=method.value,
+        )
+    except NewExperimentError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1) from None
 
 
 @app.command(
@@ -462,8 +471,15 @@ def eval_ckpt(
 def sync_base(
     nemo_rl: Optional[str] = typer.Option(None, "--nemo-rl", help="NeMo-RL 源码目录"),
 ) -> None:
-    env = {"NEMO_RL_DIR": nemo_rl} if nemo_rl else {}
-    raise typer.Exit(_run(["bash", str(SCRIPTS / "sync_base_configs.sh")], env=env))
+    path = nemo_rl or os.environ.get("NEMO_RL_DIR")
+    if not path:
+        typer.secho("请设置 NEMO_RL_DIR 或使用 --nemo-rl 指向本地 NeMo-RL 源码目录", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    try:
+        sync_base_configs(ROOT, path)
+    except SyncBaseError as e:
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(1) from None
 
 
 # ----------------------------- 提交历史 / 状态 / 日志（经服务端）-----------------------------

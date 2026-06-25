@@ -110,7 +110,7 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 
 ## 统一 CLI（`lab`）
 
-所有操作都通过 `lab` 入口（[Typer](https://typer.tiangolo.com) 实现，项目正式命令入口）：
+所有操作都通过 `lab` 入口（[Typer](https://typer.tiangolo.com) 实现，纯 Python，**macOS / Linux / Windows 完全兼容**）：
 
 ```bash
 uv run lab login --server https://lab.company.com   # 接入中心化服务（一次；之后命令会自动跳浏览器认证）
@@ -141,11 +141,11 @@ uv run lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底
 
 | 方式 | 说明 |
 | --- | --- |
-| `uv run lab ...` | 推荐；uv 自动同步项目环境再运行，对任何人都生效（无需手动装包） |
-| `./lab ...` | 仓库根的薄 shim，内部就是 `uv run lab`，可在任意目录用绝对路径调用 |
-| `lab ...` | `uv sync` 后 `.venv/bin/lab` 已生成；激活 venv 即可直接用 |
+| `uv run lab ...` | 推荐；uv 自动同步项目环境再运行，**macOS / Linux / Windows 均可用** |
+| `./lab ...`（macOS / Linux）或 `lab.cmd ...`（Windows） | 仓库根的薄 shim，内部就是 `uv run lab` |
+| `lab ...` | `uv sync` 后 `.venv/bin/lab`（Unix）或 `.venv\Scripts\lab.exe`（Windows）已生成；激活 venv 即可直接用 |
 
-`uv run lab <子命令> --help` 看每个命令的参数。CLI 只是对 `scripts/` 与各实验脚本的封装，单一事实来源。
+`uv run lab <子命令> --help` 看每个命令的参数。CLI 封装 `nemo_rl_lab/` 下的 Python 实现（`lab new` / `lab sync-base` 等不再依赖 bash）。
 实现见 `nemo_rl_lab/cli.py`。
 
 ### 终端补全（Tab）

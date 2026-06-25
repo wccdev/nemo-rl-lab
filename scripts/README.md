@@ -3,9 +3,10 @@
 作业提交统一走中心化服务：`lab login` 接入后 `lab submit <exp>`，由服务端打包上传并在集群代理执行。
 本目录下的脚本只负责「在集群侧执行」或「本地工具」，不再有从本机直连 Ray 的提交脚本。
 
-- `new_experiment.sh` — 从模板快速新建实验
+- `new_experiment.sh` — 从模板快速新建实验（薄封装 → `python -m nemo_rl_lab.new_experiment`，跨平台）
   ```bash
   bash scripts/new_experiment.sh experiments grpo_qwen3.5-4b_gsm8k_v1
+  # 等价：uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --method grpo --cluster h100
   ```
 - `_run_experiment.sh` — **实验启动通用逻辑**（集群侧执行）：各实验 `run.sh` 收口于此，叠加
   `cluster/<profile>/overrides.conf` + `env.sh`，落盘到服务端注入的 `OUTPUT_ROOT`。
@@ -15,7 +16,7 @@
   export HF_TOKEN=... HF_HOME=/data/hf_cache
   bash scripts/prefetch_hf_model.sh Qwen/Qwen3.5-4B
   ```
-- `sync_base_configs.sh` — 升级 NeMo-RL 版本时同步官方基底配置到 `configs/base/`
+- `sync_base_configs.sh` — 升级 NeMo-RL 版本时同步官方基底配置到 `configs/base/`（薄封装 → `python -m nemo_rl_lab.sync_base`）
 - `post_train.sh` — **训练后闭环**（集群侧执行，由 `lab export` / `lab eval` 经服务端代理调起）：
   把 checkpoint 转 HF（按后端自适应 `convert_dcp_to_hf.py` / `convert_megatron_to_hf.py`，可推 HF Hub），
   或对 checkpoint 跑 `examples/run_eval.py` 评测。带 `LAB_DRY_RUN=1` 只打印命令不执行。
