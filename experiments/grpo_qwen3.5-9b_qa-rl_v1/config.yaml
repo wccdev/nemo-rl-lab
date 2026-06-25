@@ -5,18 +5,20 @@
 #
 # ★ 对比实验【实验一 / baseline】：单轮、无工具——模型直接答题，环境判分即结束。
 #   对照组【实验二 / treatment】= grpo_qwen3.5-9b_qa-rl-agent_v1（多轮 + 本地文档检索工具）。
-#   两者共用同一数据集 / 模型 / LoRA / batch / seq / 裁判奖励，唯一差异是「能否多轮检索本地资料」。
+#   两者共用同一数据集 / 模型 / LoRA / batch / 裁判奖励，核心差异是「能否多轮检索本地资料」。
+#   注：seq 不同是有意的——baseline 单轮 1536 够用；agent 多轮要装下检索回灌+作答，需更大（3072），否则答案被截断。
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-9b.yaml
-  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端（删此行即切回 DTensor）
   - ../../configs/base/grpo_lora.yaml # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
   # - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 # ══════════════════════════════════════════════════════════════════════════
 #  调参速查 —— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
 #  本实验目标集群：见同目录 cluster 文件；下列数值按该卡显存调，换卡 lab submit --profile 覆盖（通常要重调）。
-#  ⚠️ 这是对比实验 baseline：batch/seq/模型/裁判须与 qa-rl-agent_v1 严格一致，否则破坏对比。
+#  ⚠️ 这是对比实验 baseline：batch/模型/LoRA/裁判须与 qa-rl-agent_v1 严格一致，否则破坏对比。
+#     （seq 例外：agent 多轮需更大预算装下检索+作答，故两边 seq 有意不同，详见 agent config 注释。）
 # ──────────────────────────────────────────────────────────────────────────
 #  lr / dim / alpha                       默认来自 grpo_lora 基底(lr 1e-4 / dim8 / alpha16)
 #  reference_policy_kl_penalty (loss_fn)  贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏/退化
@@ -33,9 +35,7 @@ policy:
   model_name: "Qwen/Qwen3.5-9B-Base"
   tokenizer:
     name: "Qwen/Qwen3.5-9B-Base"
-  max_total_sequence_length: 1536 # 多选题带选项较长（比数学题略大）；seq 不要再降（降会截断答案，踩过坑）
-  # ⚠️ GB10 统一内存：g=8/gbs=32 时 1536 长度的啰嗦生成内存逐步爬高，step 32 被 Ray OOM 杀掉。
-  #    每步样本数减半（g 8→4、gbs 32→16、gen_bs 16→8）压住内存峰值，reward 信号略噪但仍稳步上升。
+  max_total_sequence_length: 1536 # 单轮：prompt + 一次作答。多选题带选项较长，seq 不要再降（降会截断答案，踩过坑）
   train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4）
   generation_batch_size: 8
   generation:
@@ -48,8 +48,8 @@ policy:
     max_new_tokens: 1536
 
 grpo:
-  num_prompts_per_step: 4 # GB10 实测小 batch
-  num_generations_per_prompt: 4 # 8→4 防 host-RAM OOM（GRPO LOO 基线 4 样本仍有效）
+  num_prompts_per_step: 4 # 小 batch
+  num_generations_per_prompt: 4 # 组内基线；4 样本对 GRPO LOO 仍有效
   max_rollout_turns: 1 # 单轮：答一道题，环境判分即结束
   max_num_steps: 300 # 这类任务 ~100-200 步即收敛，500 多为空转；val_at_end 兜底
   val_period: 50

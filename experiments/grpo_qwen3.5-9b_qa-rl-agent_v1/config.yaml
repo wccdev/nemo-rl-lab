@@ -10,14 +10,15 @@
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
   - ../../configs/models/qwen3.5-9b.yaml
-  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端 + GB10 调优（删此行即切回 DTensor）
+  - ../../configs/base/grpo_megatron.yaml # Megatron-Core 后端（删此行即切回 DTensor）
   - ../../configs/base/grpo_lora.yaml # LoRA（删此行即全参数，并把 lr 写回 megatron_cfg.optimizer）
   # - ../../configs/base/grpo_noncolocated.yaml  # 非 colocated 生成（1 卡生成 / 1 卡训练；删此行即回 colocated）
 
 # ══════════════════════════════════════════════════════════════════════════
 #  调参速查 —— 你主要动【① 调参区】这几行。硬件/分布式在 cluster/<profile>，不在这。
 #  本实验目标集群：见同目录 cluster 文件；下列数值按该卡显存调，换卡 lab submit --profile 覆盖（通常要重调）。
-#  ⚠️ 这是对比实验 treatment：batch/seq/模型/裁判须与 qa-rl_v1 严格一致，唯一变量是「多轮+检索」。
+#  ⚠️ 这是对比实验 treatment：batch/模型/LoRA/裁判须与 qa-rl_v1 严格一致，核心变量是「多轮+检索」。
+#     注：seq 有意比 baseline 大（1536→3072）——多轮轨迹要装下「检索回灌+作答」，1536 会截断答案、反而不公平。
 # ──────────────────────────────────────────────────────────────────────────
 #  lr / dim / alpha                       默认来自 grpo_lora 基底(lr 1e-4 / dim8 / alpha16)
 #  reference_policy_kl_penalty (loss_fn)  贴原模型力度。0~0.05。大→稳但慢；小→快但易跑偏/退化
@@ -38,9 +39,7 @@ policy:
   #    1536（=baseline 单轮值）对多轮是错的：仅「prompt(~550)+搜一次(≤512)+回灌(~300)+作答(~512)」
   #    就 ≈1900>1536 → 在写 \boxed 前被截断 → 判 0。这正是初始 truncation_rate 0.6~0.9、准确率仅 15% 的根因。
   #    故抬到 3072，让「检索一次+作答」乃至两次检索都能完整放下，截断率才回得来。
-  #    ⚠️ 代价：seq 翻倍会更吃 GB10 统一内存（baseline 1536 都会 ~step280 OOM）。若本实验 OOM，按序拉这些杆
-  #       （会轻微破坏与 baseline 的 batch 对齐，但「能写完答案」比「seq 数字相同」更重要）：
-  #       grpo.num_generations_per_prompt 4→2 → 启用 grpo_noncolocated.yaml(1卡生成/1卡训练) → seq 3072→2560。
+  #    H100(80GB) 显存宽裕，3072 毫无压力（注：单卡 H100 须 colocated 生成，见 cluster profile）。
   max_total_sequence_length: 3072
   train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
   generation_batch_size: 8
@@ -49,8 +48,8 @@ policy:
 
 grpo:
   num_prompts_per_step: 4 # 与 baseline 一致
-  num_generations_per_prompt: 4 # 与 baseline 严格一致（baseline 因 GB10 OOM 降到了 4）
-  max_rollout_turns: 3 # 多轮：最多 3 轮（典型 1 次检索 + 作答）；收紧以省内存、塞进 1536
+  num_generations_per_prompt: 4 # 与 baseline 严格一致（组内基线，4 样本对 GRPO LOO 仍有效）
+  max_rollout_turns: 3 # 多轮：最多 3 轮（典型 1 次检索 + 作答）
   max_num_steps: 300 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
   val_period: 50
   val_at_start: true
@@ -81,6 +80,16 @@ env:
       # false：全部走规则判分，零成本、无需裁判端点。与 baseline 必须一致才公平。
       use_judge: true
       max_turns: 3 # 与 grpo.max_rollout_turns 对齐
+      # ── 检索 reward shaping：让模型真正用上 <search>，而不是退化成闭卷瞎猜（卡 ~62% 的主因）──
+      #    search_step_reward   每次「真取回资料」的即时奖励（远小于答对 1.0，仅作探索引导）
+      #    answer_search_bonus  「检索过且最终答对」的一次性加成（奖励靠检索拿分而非蒙）
+      #    search_bonus_min_score 触发上面加成的最低 base 分（1.0=只奖励完全答对）
+      #    no_answer_penalty    超 max_turns 仍不作答的惩罚（让「只检索不答」净收益为负，防刷分）
+      # ⚠️ 若要与 baseline 做「唯一变量=能否检索」的严格对比，把下面三项全设 0 即回到纯最终判分。
+      search_step_reward: 0.05
+      answer_search_bonus: 0.1
+      search_bonus_min_score: 1.0
+      no_answer_penalty: 0.2
 
 logger:
   wandb_enabled: false

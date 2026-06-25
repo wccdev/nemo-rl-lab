@@ -241,6 +241,7 @@ class QADocsMetadata(TypedDict, total=False):
     query: str             # 题面（裁判 LLM / 检索上下文用）
     num_turns: int         # 已交互轮数
     max_turns: int         # 最大轮数
+    did_search: bool       # 轨迹中是否真正取回过资料（reward shaping：答对加成用）
 
 
 def _extract_tag(text: str, tag: str) -> Optional[str]:
@@ -262,6 +263,17 @@ def _last_assistant_text(message_log: LLMMessageLogType) -> str:
     return ""
 
 
+# docs_search 在「失败/未命中/目录未接入」时返回的提示都以这些前缀开头；
+# 用它判断一次检索是不是真的取回了资料（只有真取到才给检索奖励 / 记 did_search）。
+_SEARCH_FAIL_PREFIXES = ("search 错误", "未检索到相关资料", "（本地资料目录未接入")
+
+
+def _is_useful_retrieval(obs: str) -> bool:
+    """这次检索是否真的取回了资料片段（非错误、非未命中、非目录未接入）。"""
+    s = (obs or "").lstrip()
+    return bool(s) and not s.startswith(_SEARCH_FAIL_PREFIXES)
+
+
 # ============================ 环境 ============================
 @ray.remote  # pragma: no cover
 class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
@@ -272,6 +284,20 @@ class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
     def __init__(self, cfg: Optional[dict[str, Any]] = None):
         self.cfg = cfg or {}
         self.use_judge = bool(self.cfg.get("use_judge", True))
+        # ── 检索 reward shaping（鼓励模型真的去用工具，而不是退化成闭卷瞎猜）──
+        # 观测到的问题：奖励只看最终 \boxed 对错，对「检索动作」零回报，且 grep 偶有噪声，
+        # 于是 RL 把策略收敛到「不检索、直接答常识题」→ 准确率早早卡在 ~62%、专有知识题系统性全错。
+        # 这里给「真正取回资料的检索」一点即时奖励 + 「检索后答对」一次性加成，并惩罚「只检索不作答」防刷分。
+        #   search_step_reward    每次「有效检索」（真取回片段）的即时奖励。小于答对收益，仅作探索引导。
+        #   answer_search_bonus   最终答对(≥min)且轨迹检索过的一次性加成（奖励"靠检索答对"）。
+        #   search_bonus_min_score  触发上面 bonus 的最低 base 分（默认 1.0=只对完全答对加成）。
+        #   no_answer_penalty     超 max_turns 仍无 \boxed 的惩罚（让"光检索不答"净收益为负，防 reward hacking）。
+        # ⚠️ 这几项默认开启以让 treatment 真正用上检索；若要与 baseline 做「唯一变量=能否检索」的严格对比，
+        #    把 search_step_reward / answer_search_bonus / no_answer_penalty 全设 0 即回到纯最终判分。
+        self.search_step_reward = float(self.cfg.get("search_step_reward", 0.05))
+        self.answer_search_bonus = float(self.cfg.get("answer_search_bonus", 0.1))
+        self.search_bonus_min_score = float(self.cfg.get("search_bonus_min_score", 1.0))
+        self.no_answer_penalty = float(self.cfg.get("no_answer_penalty", 0.2))
         # 与 QARewardEnv 同源：客观题走规则；简答 use_judge=true 走裁判、失败回退关键词覆盖率。
         if self.use_judge:
             from common.rewards.qa_judge_reward import qa_judge_reward_fn
@@ -304,6 +330,7 @@ class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
         final_q: list[str] = []
         final_comp: list[str] = []
         final_exp: list[str] = []
+        final_searched: list[bool] = []  # 该样本轨迹中是否真正取回过资料（用于答对加成）
 
         for i, (log, meta) in enumerate(zip(message_log_batch, metadata)):
             content = _last_assistant_text(log)
@@ -311,6 +338,7 @@ class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
             max_turns = int(meta.get("max_turns", 4))
             expected = str(meta.get("expected_answer", ""))
             query = str(meta.get("query", ""))
+            did_search = bool(meta.get("did_search", False))  # 跨轮累积：之前是否有效检索过
 
             boxed = self._extract_boxed(content)
             search_q = _extract_tag(content, "search")
@@ -321,22 +349,28 @@ class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
                 final_q.append(query)
                 final_comp.append(content)
                 final_exp.append(expected)
+                final_searched.append(did_search)
                 terminateds[i] = True
                 answers[i] = [expected]
                 continue
 
-            # 2) 超过最大轮数仍无答案：判 0 结束
+            # 2) 超过最大轮数仍无答案：判负（惩罚「只检索不作答」式刷分）结束
             if num_turns >= max_turns:
+                rewards[i] = -self.no_answer_penalty
                 observations[i] = {"role": "environment", "content": f"已达最大轮数 {max_turns}，结束。"}
                 terminateds[i] = True
                 continue
 
             nm: QADocsMetadata = dict(meta)  # type: ignore[assignment]
             nm["num_turns"] = num_turns + 1
+            nm["did_search"] = did_search
 
-            # 3) 检索本地文档：grep 返回片段，继续
+            # 3) 检索本地文档：grep 返回片段，继续。真取回资料才给即时检索奖励并记 did_search。
             if search_q is not None:
                 obs = docs_search(search_q)
+                if _is_useful_retrieval(obs):
+                    rewards[i] = self.search_step_reward
+                    nm["did_search"] = True
                 observations[i] = {"role": "environment", "content": f"[检索结果]\n{obs}"}
                 next_stops[i] = self.SEARCH_STOP_STRINGS
                 next_meta[i] = nm
@@ -353,12 +387,19 @@ class QADocsAgentEnv(EnvironmentInterface[QADocsMetadata]):
             next_stops[i] = self.SEARCH_STOP_STRINGS
             next_meta[i] = nm
 
-        # 批量判分给出最终答案的样本
+        # 批量判分给出最终答案的样本；「检索后答对」额外加成（奖励"靠检索拿分"而非瞎猜）。
         if final_idx:
             scores = self._reward_fn(final_q, final_comp, final_exp)
-            for i, s in zip(final_idx, scores):
-                rewards[i] = float(s)
-                observations[i] = {"role": "environment", "content": f"得分: {float(s):.3f}"}
+            for i, s, searched in zip(final_idx, scores, final_searched):
+                r = float(s)
+                bonus = (
+                    self.answer_search_bonus
+                    if (searched and r >= self.search_bonus_min_score)
+                    else 0.0
+                )
+                rewards[i] = r + bonus
+                tag = f"  (+检索加成 {bonus:.3f})" if bonus else ""
+                observations[i] = {"role": "environment", "content": f"得分: {r:.3f}{tag}"}
 
         return EnvironmentReturn(
             observations=observations,

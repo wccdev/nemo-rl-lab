@@ -38,8 +38,8 @@ def test_extract_boxed_none():
         ("[single] B", r"我觉得是 B", FORMAT_PENALTY),  # 没写 boxed → 格式罚分
         ("[bool] A", r"\boxed{A}", 1.0),
         ("[multiple] A,C,D", r"\boxed{D, A, C}", 1.0),
-        ("[multiple] A,C,D", r"\boxed{A,C}", 2 / 3),       # partial: (2-0)/3
-        ("[multiple] A,C,D", r"\boxed{A,B,C,D}", 2 / 3),   # 全选惩罚: (3-1)/3
+        ("[multiple] A,C,D", r"\boxed{A,C}", 2 / 3),         # 漏选: (2-0)/3
+        ("[multiple] A,C,D", r"\boxed{A,B,C,D}", 2.5 / 3),   # 全选(多1错): (3-0.5·1)/3，w=0.5
         (
             "[fill] 拒收/reject ||| 特采/waive ||| 放行/Release",
             r"\boxed{reject; 特采; Release}",
