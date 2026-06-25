@@ -254,6 +254,17 @@ def usage_via_server(server: Optional[str] = None) -> dict:
         return json.loads(r.read() or b"{}")
 
 
+def whoami_via_server(server: Optional[str] = None) -> dict:
+    """server 模式：取当前登录身份 + 配额（/api/whoami）。"""
+    srv = current_server(server)
+    if not srv:
+        raise typer.BadParameter("未配置 Lab 服务。")
+    token = get_access_token(srv)
+    if not token:
+        raise typer.BadParameter(f"未登录 {srv}。先 `lab login`。")
+    return _api(srv, "GET", "/api/whoami", token=token)
+
+
 def list_my_jobs(server: Optional[str] = None, limit: int = 50) -> list[dict]:
     """server 模式：取本人作业（admin 取全部）。"""
     srv = current_server(server)
@@ -654,12 +665,11 @@ def whoami(
     if not srv:
         typer.echo("未接入中心化服务。用 `lab login --server https://lab.company.com` 接入。")
         return
-    token = get_access_token(srv)
-    if not token:
-        typer.secho(f"未登录 {srv}。运行 `lab login` 登录。", fg=typer.colors.YELLOW)
-        raise typer.Exit(1)
     try:
-        who = _api(srv, "GET", "/api/whoami", token=token)
+        who = whoami_via_server(srv)
+    except typer.BadParameter as e:
+        typer.secho(str(e), fg=typer.colors.YELLOW if "未登录" in str(e) else typer.colors.RED)
+        raise typer.Exit(1) from None
     except urllib.error.HTTPError as e:
         typer.secho(f"查询失败：{e}", fg=typer.colors.RED)
         raise typer.Exit(1) from e

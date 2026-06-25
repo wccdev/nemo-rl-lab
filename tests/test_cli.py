@@ -49,3 +49,16 @@ def test_flatten_diff_keys():
     assert changed == {"x"}
     assert (set(a) - set(b)) == {"only_a"}
     assert (set(b) - set(a)) == {"only_b"}
+
+
+def test_format_user_label_basic():
+    assert cli._format_user_label({"username": "alice", "role": "operator"}) == (
+        "用户：alice  角色：operator"
+    )
+
+
+def test_format_user_label_with_email():
+    line = cli._format_user_label({"username": "bob", "role": "admin", "email": "bob@corp.com"})
+    assert "用户：bob" in line
+    assert "角色：admin" in line
+    assert "邮箱：bob@corp.com" in line

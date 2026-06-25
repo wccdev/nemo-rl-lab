@@ -23,7 +23,7 @@
     uv run lab doctor                              体检中心化服务连通 / 登录态
     uv run lab validate grpo_qwen3.5-4b_gsm8k_v1   提交前静态校验 config（batch 三者相等等）
     uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   提交作业到集群（经服务端，自动先校验）
-    uv run lab status                              我的配额 / 用量 / 活跃作业
+    uv run lab status                              我的身份 / 配额 / 用量 / 活跃作业
     uv run lab logs                                跟随最近一个作业的日志
     uv run lab job ls                              我的作业列表
     uv run lab clean grpo_qwen3.5-9b_gsm8k_v1      清理该实验在集群上的产物目录（让同名实验下次从头训练）
@@ -506,9 +506,26 @@ def runs(
         )
 
 
-@app.command(help="我的配额 / 用量 / 活跃作业（submit 前预检）")
+def _format_user_label(user: dict) -> str:
+    """把 /api/whoami 的 user 格式化为单行展示。"""
+    username = user.get("username") or "?"
+    role = user.get("role") or "?"
+    parts = [f"用户：{username}", f"角色：{role}"]
+    if user.get("email"):
+        parts.append(f"邮箱：{user['email']}")
+    return "  ".join(parts)
+
+
+@app.command(help="我的身份 / 配额 / 用量 / 活跃作业（submit 前预检）")
 def status() -> None:
     cli_login.gate("status")
+    srv = cli_login.current_server()
+    who = cli_login.whoami_via_server()
+    user = who.get("user") or {}
+    typer.echo(f"服务：{srv}")
+    typer.echo(_format_user_label(user))
+    typer.echo("")
+
     data = cli_login.usage_via_server()
     q, u = data.get("quota") or {}, data.get("usage") or {}
     cap = q.get("max_concurrent_gpus")
