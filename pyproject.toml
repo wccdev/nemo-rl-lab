@@ -38,3 +38,8 @@ target-version = "py310"
 select = ["E", "F", "I", "W", "B"]
 # E501: 行宽交给 line-length；B008: Typer 惯用法（默认值里调用 typer.Option/Argument），非缺陷。
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# 实验入口脚本须先 sys.path.insert(REPO_ROOT) 再 import nemo_rl / common（运行时按路径访问，
+# 不安装成包），故 import 不在文件顶部是有意为之——对这类入口豁免 E402。
+"experiments/*/run.py" = ["E402"]
