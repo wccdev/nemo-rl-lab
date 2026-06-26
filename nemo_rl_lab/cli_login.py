@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import random
 import secrets
 import subprocess
 import sys
@@ -118,14 +119,20 @@ def _refresh(server: str, creds: dict) -> Optional[dict]:
     rt = creds.get("refresh_token")
     if not rt:
         return None
-    try:
-        resp = _api(server, "POST", "/api/auth/refresh", body={"refresh_token": rt})
-    except urllib.error.HTTPError:
-        return None
-    creds["access_token"] = resp["access_token"]
-    creds["expires_at"] = time.time() + resp.get("expires_in", 3600) - 60
-    _save_creds(server, creds)
-    return creds
+    # 限流（429）视为瞬时错误，短退避重试，避免误判为凭据失效而强制重登。
+    for attempt in range(3):
+        try:
+            resp = _api(server, "POST", "/api/auth/refresh", body={"refresh_token": rt})
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            return None
+        creds["access_token"] = resp["access_token"]
+        creds["expires_at"] = time.time() + resp.get("expires_in", 3600) - 60
+        _save_creds(server, creds)
+        return creds
+    return None
 
 
 def get_access_token(server: str, *, auto_refresh: bool = True) -> Optional[str]:
@@ -299,22 +306,26 @@ def latest_job_via_server(server: Optional[str] = None) -> Optional[str]:
     return jobs[0].get("ray_submission_id") if jobs else None
 
 
-def parse_sse_stream(lines):
-    """把 SSE 字节/字符行流解析为 (event, data) 事件序列。
+def iter_sse_events(lines):
+    """把 SSE 字节/字符行流解析为 (event, event_id, data) 事件序列。
 
     服务端按 SSE 协议发帧：`event:` / `id:` / `data:`，多行内容拆成多条 `data:` 行，
     `: keepalive` 为注释心跳。规范要求：空行分发一个事件、data 多行以 \n 拼回、
     冒号后仅去掉一个前导空格（保留日志缩进）。无 event 字段默认 "message"。
+
+    event_id 遵循 WHATWG EventSource 的“粘性 last event id”语义：仅在出现新的
+    `id:` 字段时更新，并跨事件保留——用于断线续传（Last-Event-ID / ?from=）。
     """
     event = "message"
+    event_id: Optional[str] = None
     data_lines: list[str] = []
     for raw in lines:
         line = raw.decode(errors="ignore") if isinstance(raw, (bytes, bytearray)) else raw
         line = line.rstrip("\r\n")
         if line == "":  # 空行 = 事件结束
             if data_lines:
-                yield event, "\n".join(data_lines)
-            event, data_lines = "message", []
+                yield event, event_id, "\n".join(data_lines)
+            event, data_lines = "message", []  # event_id 不重置（粘性）
             continue
         if line.startswith(":"):  # 注释（keepalive），忽略
             continue
@@ -325,9 +336,19 @@ def parse_sse_stream(lines):
             event = value
         elif field == "data":
             data_lines.append(value)
-        # id 等字段忽略
+        elif field == "id":
+            event_id = value
     if data_lines:  # 末尾无空行兜底
-        yield event, "\n".join(data_lines)
+        yield event, event_id, "\n".join(data_lines)
+
+
+def parse_sse_stream(lines):
+    """向后兼容包装：仅产出 (event, data)，丢弃 id（历史调用方/测试契约）。"""
+    for event, _event_id, data in iter_sse_events(lines):
+        yield event, data
+
+
+_STREAM_BACKOFF_MAX = 30.0
 
 
 def stream_logs_via_server(job_id: str, server: Optional[str] = None,
@@ -336,29 +357,59 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
 
     只把 log 事件原文还原后打到 stdout，不暴露 event:/id:/data:/keepalive 等协议噪音。
     tail 给定时只回放最后 N 行历史日志再跟随（None=全量）。
+
+    健壮性：服务端为多副本 Redis Streams 推送，长连接可能被反代/实例切换回收。
+    本函数在连接非正常结束（未收到 end 事件）时按指数退避自动重连，并携带
+    Last-Event-ID 头 + ?from=<id> 从断点续传，避免日志丢失或重复回放历史。
+    作业到达终态时服务端发 end 事件，收到后干净退出（不再重连）。
     """
     srv = current_server(server)
     if not srv:
         raise typer.BadParameter("未配置 Lab 服务。")
-    q = {"id": job_id}
-    if tail is not None:
-        q["tail"] = str(tail)
-    path = f"/api/job/logs/stream?{urllib.parse.urlencode(q)}"
+
+    last_id: Optional[str] = None
+    backoff = 1.0
+    ended = False
     try:
-        with _bearer_request(srv, "GET", path, timeout=None) as r:
-            for event, data in parse_sse_stream(r):  # urllib 响应按行迭代
-                if event == "log":
-                    sys.stdout.write(data)  # data 已按 \n 还原，含原始换行
-                    sys.stdout.flush()
-                elif event == "error":
-                    typer.secho(f"\n[日志流错误] {data}", fg=typer.colors.RED, err=True)
-                elif event == "end":
-                    break
-                # open / 其它事件：静默忽略
+        while not ended:
+            q = {"id": job_id}
+            if last_id is not None:  # 续传：从断点之后继续，不重复回放 tail
+                q["from"] = last_id
+            elif tail is not None:
+                q["tail"] = str(tail)
+            path = f"/api/job/logs/stream?{urllib.parse.urlencode(q)}"
+            headers = {"Last-Event-ID": last_id} if last_id is not None else None
+            try:
+                with _bearer_request(srv, "GET", path, headers=headers, timeout=None) as r:
+                    backoff = 1.0  # 连上即重置退避
+                    for event, eid, data in iter_sse_events(r):  # urllib 响应按行迭代
+                        if eid is not None:
+                            last_id = eid  # 记录断点续传位置
+                        if event == "log":
+                            sys.stdout.write(data)  # data 已按 \n 还原，含原始换行
+                            sys.stdout.flush()
+                        elif event == "error":
+                            typer.secho(f"\n[日志流错误] {data}", fg=typer.colors.RED, err=True)
+                        elif event == "end":
+                            ended = True
+                            break
+                        # open / 其它事件：静默忽略
+            except urllib.error.HTTPError as e:
+                # 4xx（限流 429 除外）通常不可恢复：作业不存在 / 无权限 / 鉴权失效。
+                if e.code != 429 and 400 <= e.code < 500:
+                    raise typer.BadParameter(f"取日志失败 [{e.code}]") from e
+                # 429 限流 / 5xx：退避后重连。
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
+                # 网络中断 / 连接被回收：退避后用 from=last_id 续传。
+                pass
+
+            if ended:
+                break
+            # 抖动退避，避免实例重启时的重连风暴。
+            time.sleep(backoff + random.uniform(0, backoff * 0.25))
+            backoff = min(backoff * 2, _STREAM_BACKOFF_MAX)
     except KeyboardInterrupt:
         typer.echo("\n(已停止跟随)")
-    except urllib.error.HTTPError as e:
-        raise typer.BadParameter(f"取日志失败 [{e.code}]") from e
 
 
 def job_overview_via_server(job_id: str, server: Optional[str] = None) -> dict:
@@ -484,7 +535,7 @@ def _device_login(server: str, timeout: float = 900.0) -> dict:
         detail = tok.get("detail", "")
         if detail == "authorization_pending":
             continue
-        if detail == "slow_down":
+        if detail == "slow_down" or status == 429:  # 限流：放慢轮询而非中止授权
             interval = min(interval + 5, 60)
             continue
         raise typer.BadParameter(f"设备授权失败：{detail or status}")
