@@ -4,7 +4,7 @@
 保证未装 fastapi 的纯客户端也能 `lab login`。
 
 本地状态：
-  ~/.lab/config.json       {"server": "https://lab.company.com"}
+  ~/.lab/config.json       {"server": "https://nemolab.gcoreinc.com"}
   ~/.lab/credentials.json  {"<server>": {access_token, refresh_token, expires_at, user}}
 """
 from __future__ import annotations
@@ -28,6 +28,31 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+
+# 官方中心化 Lab 服务（lab login 默认；未配置时 CLI 亦指向此地址）
+DEFAULT_LAB_SERVER = "https://nemolab.gcoreinc.com"
+
+MSG_NOT_LOGGED_IN = "请先运行 lab login"
+
+
+def _http_error_detail(e: urllib.error.HTTPError, *, fallback: str) -> str:
+    """从 HTTP 响应提取可读错误信息（不暴露状态码等实现细节）。"""
+    raw = e.read().decode(errors="ignore")
+    try:
+        payload = json.loads(raw)
+        detail = payload.get("detail", payload)
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        if isinstance(detail, list) and detail:
+            first = detail[0]
+            if isinstance(first, dict) and first.get("msg"):
+                return str(first["msg"])
+            return str(first)
+    except json.JSONDecodeError:
+        pass
+    text = raw.strip()
+    return text[:240] if text else fallback
+
 
 LAB_DIR = Path(os.environ.get("LAB_HOME") or (Path.home() / ".lab"))
 CONFIG_PATH = LAB_DIR / "config.json"
@@ -69,8 +94,13 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def current_server(explicit: Optional[str] = None) -> Optional[str]:
-    """server 地址优先级：显式 > 环境 LAB_SERVER > config.json。"""
-    s = explicit or os.environ.get("LAB_SERVER") or _read_json(CONFIG_PATH).get("server")
+    """server 地址优先级：显式 > 环境 LAB_SERVER > config.json > 官方默认。"""
+    s = (
+        explicit
+        or os.environ.get("LAB_SERVER")
+        or _read_json(CONFIG_PATH).get("server")
+        or DEFAULT_LAB_SERVER
+    )
     return s.rstrip("/") if s else None
 
 
@@ -180,7 +210,7 @@ def pack_working_dir(repo_root: Path) -> bytes:
     listing = _git_out(["ls-files", "--cached", "--others", "--exclude-standard"], repo_root)
     files = [f for f in listing.splitlines() if f.strip()]
     if not files:
-        raise typer.BadParameter("打包失败：未在 git 仓库内或没有可上传文件。")
+        raise typer.BadParameter("请在 git 仓库目录内运行，且存在可上传的文件。")
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for rel in files:
@@ -195,7 +225,7 @@ def _bearer_request(server: str, method: str, path: str, *, data: Optional[bytes
     """带 token 的请求；返回 urlopen 的响应对象（调用方负责读取/关闭）。"""
     token = get_access_token(server)
     if not token:
-        raise typer.BadParameter(f"未登录 {server}。先 `lab login`。")
+        raise typer.BadParameter(MSG_NOT_LOGGED_IN)
     h = {"Authorization": f"Bearer {token}"}
     if headers:
         h.update(headers)
@@ -207,8 +237,6 @@ def submit_via_server(exp_rel: str, profile: Optional[str], repo_root: Path,
                       server: Optional[str] = None) -> dict:
     """server 模式提交：打包上传 + 服务端注入密钥后代理提交，返回 {job_id, run_id, ...}。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     meta = {"exp": exp_rel, "profile": profile or "", **git_provenance(repo_root, exp_rel)}
     blob = pack_working_dir(repo_root)
     headers = {"Content-Type": "application/gzip", "X-Lab-Meta": json.dumps(meta, ensure_ascii=False)}
@@ -216,16 +244,13 @@ def submit_via_server(exp_rel: str, profile: Optional[str], repo_root: Path,
         with _bearer_request(srv, "POST", "/api/jobs", data=blob, headers=headers, timeout=300.0) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="ignore")
-        raise typer.BadParameter(f"提交失败 [{e.code}]：{detail}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="提交失败，请稍后重试。")) from e
 
 
 def submit_post_via_server(action: str, exp_rel: str, profile: Optional[str], flags: list[str],
                            repo_root: Path, server: Optional[str] = None) -> dict:
     """server 模式训练后闭环（export/eval）：打包上传 → 服务端代理提交 post_train.sh。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     meta = {"action": action, "exp": exp_rel, "profile": profile or "",
             "flags": flags, **git_provenance(repo_root, exp_rel)}
     blob = pack_working_dir(repo_root)
@@ -234,64 +259,54 @@ def submit_post_via_server(action: str, exp_rel: str, profile: Optional[str], fl
         with _bearer_request(srv, "POST", "/api/post", data=blob, headers=headers, timeout=300.0) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="ignore")
-        raise typer.BadParameter(f"{action} 提交失败 [{e.code}]：{detail}") from e
+        label = "导出" if action == "export" else "评测"
+        raise typer.BadParameter(_http_error_detail(e, fallback=f"{label}提交失败，请稍后重试。")) from e
 
 
 def clean_via_server(exp_rel: str, server: Optional[str] = None) -> dict:
     """server 模式：清理本实验在集群上的产物目录（checkpoint/日志），经服务端在集群侧删除。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     path = f"/api/clean?exp={urllib.parse.quote(exp_rel)}"
     try:
         with _bearer_request(srv, "POST", path) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="ignore")
-        raise typer.BadParameter(f"清理失败 [{e.code}]：{detail}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="清理失败，请稍后重试。")) from e
 
 
 def usage_via_server(server: Optional[str] = None) -> dict:
-    """server 模式：取本人配额 + 实时用量。"""
+    """取本人配额 + 实时用量。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     with _bearer_request(srv, "GET", "/api/usage/mine") as r:
         return json.loads(r.read() or b"{}")
 
 
 def whoami_via_server(server: Optional[str] = None) -> dict:
-    """server 模式：取当前登录身份 + 配额（/api/whoami）。"""
+    """取当前登录身份 + 配额。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     token = get_access_token(srv)
     if not token:
-        raise typer.BadParameter(f"未登录 {srv}。先 `lab login`。")
+        raise typer.BadParameter(MSG_NOT_LOGGED_IN)
     return _api(srv, "GET", "/api/whoami", token=token)
 
 
 def list_my_jobs(server: Optional[str] = None, limit: int = 50) -> list[dict]:
-    """server 模式：取本人作业（admin 取全部）。"""
+    """获取作业列表。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     with _bearer_request(srv, "GET", f"/api/jobs/mine?limit={limit}") as r:
         return (json.loads(r.read() or b"{}")).get("jobs", [])
 
 
 def job_control_via_server(action: str, job_id: str, server: Optional[str] = None) -> dict:
-    """server 模式：停止 / 删除作业（经服务端，不直连 Ray）。"""
+    """停止 / 删除作业。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     path = f"/api/job/{action}?id={urllib.parse.quote(job_id)}"
+    labels = {"stop": "停止作业", "delete": "删除记录"}
     try:
         with _bearer_request(srv, "POST", path) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raise typer.BadParameter(f"{action} 失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback=f"{labels.get(action, '操作')}失败。")) from e
 
 
 def latest_job_via_server(server: Optional[str] = None) -> Optional[str]:
@@ -364,8 +379,6 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
     作业到达终态时服务端发 end 事件，收到后干净退出（不再重连）。
     """
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
 
     last_id: Optional[str] = None
     backoff = 1.0
@@ -389,7 +402,7 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
                             sys.stdout.write(data)  # data 已按 \n 还原，含原始换行
                             sys.stdout.flush()
                         elif event == "error":
-                            typer.secho(f"\n[日志流错误] {data}", fg=typer.colors.RED, err=True)
+                            typer.secho(f"\n{data}", fg=typer.colors.RED, err=True)
                         elif event == "end":
                             ended = True
                             break
@@ -397,7 +410,7 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
             except urllib.error.HTTPError as e:
                 # 4xx（限流 429 除外）通常不可恢复：作业不存在 / 无权限 / 鉴权失效。
                 if e.code != 429 and 400 <= e.code < 500:
-                    raise typer.BadParameter(f"取日志失败 [{e.code}]") from e
+                    raise typer.BadParameter(_http_error_detail(e, fallback="无法读取日志。")) from e
                 # 429 限流 / 5xx：退避后重连。
             except (urllib.error.URLError, ConnectionError, TimeoutError):
                 # 网络中断 / 连接被回收：退避后用 from=last_id 续传。
@@ -409,34 +422,30 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
             time.sleep(backoff + random.uniform(0, backoff * 0.25))
             backoff = min(backoff * 2, _STREAM_BACKOFF_MAX)
     except KeyboardInterrupt:
-        typer.echo("\n(已停止跟随)")
+        typer.echo("\n已停止跟随。")
 
 
 def job_overview_via_server(job_id: str, server: Optional[str] = None) -> dict:
-    """取作业概览（含 validations 列表），用于定位验证轮次。"""
+    """取作业概览（含 validations 列表）。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     path = f"/api/job?id={urllib.parse.quote(job_id)}"
     try:
         with _bearer_request(srv, "GET", path) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raise typer.BadParameter(f"取作业概览失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="无法获取作业信息。")) from e
 
 
 def samples_via_server(job_id: str, vidx: int, offset: int = 0, limit: int = 6,
                        server: Optional[str] = None) -> dict:
     """取某次验证的多轮对话样本（分页）。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     q = urllib.parse.urlencode({"id": job_id, "vidx": vidx, "offset": offset, "limit": limit})
     try:
         with _bearer_request(srv, "GET", f"/api/samples?{q}") as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raise typer.BadParameter(f"取样本失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="无法获取验证样本。")) from e
 
 
 def cluster_status_via_server(server: Optional[str] = None) -> Optional[dict]:
@@ -452,15 +461,13 @@ def cluster_status_via_server(server: Optional[str] = None) -> Optional[dict]:
 
 
 def batch_via_server(action: str, server: Optional[str] = None) -> dict:
-    """批量作业控制：cancel-all（停止全部在跑）/ clean（清理终态 Ray 记录），经服务端。"""
+    """批量作业控制：cancel-all / clean。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。")
     try:
         with _bearer_request(srv, "POST", f"/api/jobs/{action}") as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
-        raise typer.BadParameter(f"{action} 失败 [{e.code}]：{e.read().decode(errors='ignore')}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="操作失败，请稍后重试。")) from e
 
 
 # ----------------------------- 环境检测 / 设备码登录 -----------------------------
@@ -502,7 +509,7 @@ def _device_login(server: str, timeout: float = 900.0) -> dict:
     status, resp = _http_json(server, "POST", "/api/cli/device/code", body={"device": device})
     if status != 200:
         detail = resp.get("detail", resp)
-        raise typer.BadParameter(f"无法启动设备授权：{detail}")
+        raise typer.BadParameter(f"无法启动登录：{detail}")
 
     device_code = resp["device_code"]
     user_code = resp["user_code"]
@@ -511,9 +518,9 @@ def _device_login(server: str, timeout: float = 900.0) -> dict:
     expires_at = time.time() + float(resp.get("expires_in", timeout))
 
     typer.echo("")
-    typer.secho("请在任意设备的浏览器中完成 CLI 授权：", fg=typer.colors.YELLOW)
-    typer.echo(f"  1. 打开 {verification_uri}")
-    typer.secho(f"  2. 输入验证码：{user_code}", fg=typer.colors.CYAN, bold=True)
+    typer.secho("请用浏览器完成登录：", fg=typer.colors.YELLOW)
+    typer.echo(f"  打开 {verification_uri}")
+    typer.secho(f"  验证码：{user_code}", fg=typer.colors.CYAN, bold=True)
     typer.echo("")
 
     if not (os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")):
@@ -538,9 +545,9 @@ def _device_login(server: str, timeout: float = 900.0) -> dict:
         if detail == "slow_down" or status == 429:  # 限流：放慢轮询而非中止授权
             interval = min(interval + 5, 60)
             continue
-        raise typer.BadParameter(f"设备授权失败：{detail or status}")
+        raise typer.BadParameter(f"登录失败：{detail or status}")
 
-    raise typer.BadParameter("设备授权超时，请重试。")
+    raise typer.BadParameter("登录超时，请重试。")
 
 
 def _interactive_login(server: str, *, device_flow: bool = False, no_browser: bool = False) -> dict:
@@ -601,7 +608,7 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
         {"redirect_uri": redirect_uri, "state": state, "challenge": challenge, "device": device},
     )
     auth_url = f"{server}/cli/authorize?{q}"
-    typer.echo(f"正在打开浏览器完成登录：{auth_url}")
+    typer.echo("正在打开浏览器…")
     webbrowser.open(auth_url)
 
     deadline = time.time() + timeout
@@ -617,11 +624,11 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
 
     res = _CallbackHandler.result
     if not res:
-        raise typer.BadParameter("登录超时未收到回调，请重试。")
+        raise typer.BadParameter("登录超时，请重试。")
     if res.get("error"):
         raise typer.BadParameter(f"登录失败：{res['error']}")
     if res.get("state") != state:
-        raise typer.BadParameter("state 校验失败（疑似 CSRF），已中止。")
+        raise typer.BadParameter("登录校验失败，请重试。")
 
     resp = _api(
         server, "POST", "/api/cli/token",
@@ -642,112 +649,103 @@ def _browser_login(server: str, timeout: float = 180.0) -> dict:
 
 # ----------------------------- 命令门控 -----------------------------
 def gate(command: str) -> None:
-    """集群类命令执行前调用：未接入中心化服务则报错引导登录；已接入但未登录则自动开浏览器认证。"""
+    """集群类命令执行前：未登录则自动发起登录。"""
     server = current_server()
-    if not server:
-        raise typer.BadParameter(
-            "未接入中心化服务。先 `lab login --server https://lab.company.com` 接入后再操作集群命令。"
-        )
     if command not in GATED_COMMANDS:
         return
     token = get_access_token(server)
     if token:
         return
     if prefer_device_flow():
-        typer.secho(f"未登录 {server}，请按终端提示完成设备码授权…", fg=typer.colors.YELLOW)
+        typer.secho("正在登录…", fg=typer.colors.YELLOW)
     else:
-        typer.secho(f"未登录 {server}，正在打开浏览器完成认证…", fg=typer.colors.YELLOW)
+        typer.secho("正在打开浏览器登录…", fg=typer.colors.YELLOW)
     creds = _interactive_login(server)
     _save_creds(server, creds)
     u = (creds.get("user") or {}).get("username", "?")
-    typer.secho(f"✓ 已登录为 {u}", fg=typer.colors.GREEN)
+    typer.secho(f"✓ 已登录：{u}", fg=typer.colors.GREEN)
 
 
 # ----------------------------- Typer 命令 -----------------------------
 def login(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="Lab 服务地址，如 https://lab.company.com"),
+    server: Optional[str] = typer.Option(
+        None, "--server", "-s",
+        help=f"Lab 服务地址（默认 {DEFAULT_LAB_SERVER}）",
+    ),
     token: Optional[str] = typer.Option(None, "--token", help="非交互登录：直接用服务令牌（CI 用）"),
     device_flow: bool = typer.Option(False, "--device-flow", help="强制使用设备码登录（SSH / 无浏览器）"),
     no_browser: bool = typer.Option(False, "--no-browser", help="不打开浏览器（等同 --device-flow）"),
 ) -> None:
-    """登录中心化 Lab 服务（SSH 环境自动走设备码；本机默认浏览器回环）。"""
+    """登录 Lab（本机默认浏览器；SSH 环境走验证码）。"""
     srv = current_server(server)
-    if not srv:
-        raise typer.BadParameter("未指定服务地址。用 `lab login --server https://lab.company.com`。")
     _save_server(srv)
     if token:
         creds = {"access_token": token, "refresh_token": None, "expires_at": None, "user": None}
         try:
             who = _api(srv, "GET", "/api/whoami", token=token)
             creds["user"] = who.get("user")
-        except urllib.error.HTTPError as e:
-            raise typer.BadParameter(f"服务令牌无效：{e}") from e
+        except urllib.error.HTTPError:
+            raise typer.BadParameter("登录令牌无效，请重新登录。") from None
         _save_creds(srv, creds)
     else:
         creds = _interactive_login(srv, device_flow=device_flow, no_browser=no_browser)
         _save_creds(srv, creds)
     u = (creds.get("user") or {}).get("username", "?")
-    typer.secho(f"✓ 已登录 {srv}（用户 {u}）", fg=typer.colors.GREEN)
+    typer.secho(f"✓ 已登录：{u}", fg=typer.colors.GREEN)
 
 
 def logout(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定服务地址（默认当前）"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定 Lab 地址（默认当前）"),
 ) -> None:
-    """登出：吊销 refresh 并清除本地凭据。"""
+    """登出当前账号。"""
     srv = current_server(server)
-    if not srv:
-        typer.echo("未登录任何服务。")
-        return
     creds = _load_creds(srv)
-    if creds and creds.get("refresh_token"):
+    if not creds:
+        typer.echo("当前未登录。")
+        return
+    if creds.get("refresh_token"):
         try:
             _api(srv, "POST", "/api/auth/logout", body={"refresh_token": creds["refresh_token"]})
         except urllib.error.URLError:
             pass
     _clear_creds(srv)
-    typer.secho(f"✓ 已登出 {srv}", fg=typer.colors.GREEN)
+    typer.secho("✓ 已登出", fg=typer.colors.GREEN)
 
 
 def whoami(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定服务地址（默认当前）"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定 Lab 地址（默认当前）"),
 ) -> None:
-    """显示当前登录身份 / 角色 / 配额。"""
+    """显示当前账号与配额。"""
     srv = current_server(server)
-    if not srv:
-        typer.echo("未接入中心化服务。用 `lab login --server https://lab.company.com` 接入。")
-        return
     try:
         who = whoami_via_server(srv)
     except typer.BadParameter as e:
-        typer.secho(str(e), fg=typer.colors.YELLOW if "未登录" in str(e) else typer.colors.RED)
+        typer.secho(str(e), fg=typer.colors.YELLOW)
         raise typer.Exit(1) from None
-    except urllib.error.HTTPError as e:
-        typer.secho(f"查询失败：{e}", fg=typer.colors.RED)
-        raise typer.Exit(1) from e
+    except urllib.error.HTTPError:
+        typer.secho("无法获取账号信息，请稍后重试。", fg=typer.colors.RED)
+        raise typer.Exit(1) from None
     user = who.get("user") or {}
     quota = who.get("quota") or {}
-    typer.echo(f"服务：{srv}")
-    typer.echo(f"用户：{user.get('username')}  角色：{user.get('role')}")
+    typer.echo(f"用户：{user.get('username') or '?'}  角色：{user.get('role') or '?'}")
+    cap = quota.get("max_concurrent_gpus")
+    jobs = quota.get("max_concurrent_jobs")
+    daily = quota.get("daily_gpu_hours")
     typer.echo(
-        "配额："
-        f"GPU≤{quota.get('max_concurrent_gpus')} "
-        f"作业≤{quota.get('max_concurrent_jobs')} "
-        f"日GPU时={quota.get('daily_gpu_hours')}"
-        + ("（默认/未单独分配）" if quota.get("default") else "")
+        f"配额：GPU {'不限' if cap is None else cap}"
+        f" · 作业 {jobs if jobs is not None else '不限'}"
+        f" · 日 GPU 时 {daily if daily else '不限'}"
     )
 
 
 def quota(
-    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定服务地址（默认当前）"),
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="指定 Lab 地址（默认当前）"),
 ) -> None:
-    """查看配额与实时用量（用量在 Phase C 接入）。"""
+    """查看配额与实时用量。"""
     srv = current_server(server)
-    if not srv:
-        typer.echo("未接入中心化服务。用 `lab login --server https://lab.company.com` 接入。")
-        return
     token = get_access_token(srv)
     if not token:
-        typer.secho(f"未登录 {srv}。运行 `lab login` 登录。", fg=typer.colors.YELLOW)
+        typer.secho(MSG_NOT_LOGGED_IN, fg=typer.colors.YELLOW)
         raise typer.Exit(1)
     data = _api(srv, "GET", "/api/quota", token=token)
     typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
@@ -756,21 +754,18 @@ def quota(
 # ----------------------------- lab admin（管理员）-----------------------------
 def _admin_call(method: str, path: str, *, body: Optional[dict] = None) -> dict:
     srv = current_server()
-    if not srv:
-        raise typer.BadParameter("未配置 Lab 服务。先 `lab login --server ...`。")
     token = get_access_token(srv)
     if not token:
-        raise typer.BadParameter(f"未登录 {srv}。先 `lab login`。")
+        raise typer.BadParameter(MSG_NOT_LOGGED_IN)
     try:
         return _api(srv, method, path, token=token, body=body)
     except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="ignore")
-        raise typer.BadParameter(f"请求失败 [{e.code}]：{detail}") from e
+        raise typer.BadParameter(_http_error_detail(e, fallback="请求失败。")) from e
 
 
 admin_app = typer.Typer(
     no_args_is_help=True,
-    help="管理员：管理本地账号与算力配额（需以 admin 身份登录中心化 Lab 服务）。",
+    help="管理员：用户与配额管理（需 admin 权限）。",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 

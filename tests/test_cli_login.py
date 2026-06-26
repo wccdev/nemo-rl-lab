@@ -72,8 +72,8 @@ def isolated_lab(tmp_path, monkeypatch):
 
 
 def test_server_mode_detection(isolated_lab, monkeypatch):
-    assert cli_login.current_server() is None
-    assert cli_login.is_server_mode() is False
+    assert cli_login.current_server() == cli_login.DEFAULT_LAB_SERVER
+    assert cli_login.is_server_mode() is True
     cli_login._save_server("https://lab.x.com/")
     assert cli_login.current_server() == "https://lab.x.com"  # 去尾斜杠
     monkeypatch.setenv("LAB_SERVER", "https://env.x.com")
@@ -81,19 +81,24 @@ def test_server_mode_detection(isolated_lab, monkeypatch):
     assert cli_login.current_server("https://explicit.com") == "https://explicit.com"
 
 
+def test_gate_auto_login_uses_default_server(isolated_lab, monkeypatch):
+    monkeypatch.setattr(cli_login, "get_access_token", lambda *a, **kw: None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cli_login,
+        "_interactive_login",
+        lambda srv, **kw: calls.append(srv) or {"access_token": "t", "user": {"username": "u"}},
+    )
+    monkeypatch.setattr(cli_login, "_save_creds", lambda *a, **kw: None)
+    cli_login.gate("submit")
+    assert calls == [cli_login.DEFAULT_LAB_SERVER]
+
+
 def test_creds_roundtrip(isolated_lab):
     cli_login._save_creds("https://lab.x.com", {"access_token": "t", "expires_at": None})
     assert cli_login._load_creds("https://lab.x.com")["access_token"] == "t"
     cli_login._clear_creds("https://lab.x.com")
     assert cli_login._load_creds("https://lab.x.com") is None
-
-
-def test_gate_requires_server(isolated_lab):
-    # 未接入中心化服务：gate 必须报错引导登录（不再有 direct no-op），不触发任何网络/浏览器
-    import typer
-
-    with pytest.raises(typer.BadParameter):
-        cli_login.gate("submit")
 
 
 def test_prefer_device_flow_ssh(monkeypatch):

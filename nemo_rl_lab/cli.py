@@ -1,40 +1,6 @@
-"""nemo-rl-lab 统一 CLI（Typer 实现）。
+"""nemo-rl-lab 统一 CLI。
 
-所有操作都通过 `lab <子命令>` 执行；内部调用 nemo_rl_lab/ 与各实验脚本（集群侧 run.sh 仍在 Linux 容器执行）。
-本 CLI 是项目的命令入口（pyproject [project.scripts] lab = nemo_rl_lab.cli:app）。
-
-提交一律走【中心化 Lab 服务】：先 `lab login` 接入服务，`lab submit` 把工作目录打包上传，
-服务端注入密钥 / 路径 / 数据目录，并在集群上代理执行（Ray 地址、密钥都在服务端，本机不直连 Ray、
-不读任何 submit.env）。
-
-    调用方式（任选）：
-    uv run lab ls            # 推荐：uv 自动同步项目环境再运行（macOS / Linux / Windows）
-    ./lab ls                 # macOS/Linux 薄 shim，等价于上面那条
-    lab.cmd ls               # Windows 薄 shim，等价于上面那条
-    lab ls                   # uv sync 后 venv 内 lab 已存在；激活 venv 即可直接用
-
-常用：
-    uv run lab login --server https://lab.company.com   接入中心化服务（鉴权/配额/监控）
-    uv run lab ls                                  列出实验 / 项目
-    uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --method grpo --cluster h100   从骨架新建实验（grpo|sft|agent）
-    uv run lab new my_run --from grpo_qwen3.5-4b_gsm8k_v1   fork 现成实验来调参（继承其集群）
-    uv run lab diff grpo_qwen3.5-4b_gsm8k_v1 grpo_qwen3.5-9b_gsm8k_v1   对比两实验有效 config 差异
-    uv run lab prepare gsm8k                       预处理数据集
-    uv run lab doctor                              体检中心化服务连通 / 登录态
-    uv run lab validate grpo_qwen3.5-4b_gsm8k_v1   提交前静态校验 config（batch 三者相等等）
-    uv run lab submit agent-grpo_qwen3.5-9b_multitool_v1   提交作业到集群（经服务端，自动先校验）
-    uv run lab status                              我的身份 / 配额 / 用量 / 活跃作业
-    uv run lab logs                                跟随最近一个作业的日志
-    uv run lab job ls                              我的作业列表
-    uv run lab clean grpo_qwen3.5-9b_gsm8k_v1      清理该实验在集群上的产物目录（让同名实验下次从头训练）
-    uv run lab export grpo_qwen3.5-9b_gsm8k_v1     把 checkpoint 转 HF（自适应 dcp/megatron），可 --push-repo 推 Hub
-    uv run lab eval grpo_qwen3.5-9b_gsm8k_v1       对 checkpoint 跑独立评测（未给 --model 先自动导出）
-    uv run lab runs                                我的提交历史（服务端台账）
-    uv run lab sync-base --nemo-rl /opt/NeMo-RL    同步官方基底配置
-
-补全（Tab，支持 bash/zsh/fish/powershell）：
-    uv run lab --install-completion     # 安装到当前 shell
-    uv run lab --show-completion        # 仅打印脚本
+常用：lab login · lab submit <实验> · lab status · lab logs
 """
 from __future__ import annotations
 
@@ -64,7 +30,7 @@ app = typer.Typer(
     add_completion=True,
     no_args_is_help=True,
     rich_markup_mode="rich",
-    help="nemo-rl-lab 统一 CLI",
+    help="NeMo RL 实验 CLI",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
@@ -83,7 +49,7 @@ def _resolve_exp(name: str) -> str:
     for c in cands:
         if (ROOT / c).is_dir():
             return c
-    raise typer.BadParameter(f"找不到实验: {name}（已尝试: {', '.join(cands)}）")
+    raise typer.BadParameter(f"找不到实验：{name}")
 
 
 def _list_exps() -> list[str]:
@@ -118,7 +84,7 @@ def _complete_dataset(incomplete: str) -> list[str]:
 # 共享的 profile 选项（submit/export/eval 提交时把硬件 profile 转发给服务端，决定集群 overrides）。
 _PROF_OPT = typer.Option(
     None, "--profile", autocompletion=_complete_profile,
-    help="硬件 profile（决定集群 cluster/<profile>/overrides.conf；提交时转发给服务端，默认用实验自带 cluster 文件）",
+    help="硬件 profile（默认用实验目录下的 cluster 文件）",
 )
 
 
@@ -148,25 +114,25 @@ def ls() -> None:
             typer.echo(f"  - {e}")
 
 
-@app.command(help="新建实验：默认从空白模板（--method 选骨架）；--from 则 fork 现成实验（自动改 SwanLab/README 名）")
+@app.command(help="新建实验（--from fork 现成实验；--method 选 grpo/sft/agent 骨架）")
 def new(
-    name: str = typer.Argument(..., help="新实验名（见 docs/naming-convention.md）"),
+    name: str = typer.Argument(..., help="实验名"),
     from_exp: Optional[str] = typer.Option(
         None, "--from", autocompletion=_complete_exp,
-        help="从此现成实验 fork：copy 目录 + 把 config.yaml 的 swanlab project/name 与 README 标题改成新名",
+        help="从已有实验 fork",
     ),
     method: Method = typer.Option(
         Method.grpo, "--method", "-m",
-        help="空白模板的训练方法骨架：grpo（默认）| sft | agent（=GRPO 多轮，含 env+run.py 骨架）。--from 时忽略",
+        help="空白模板：grpo | sft | agent（--from 时忽略）",
     ),
     cluster: Optional[str] = typer.Option(
         None, "--cluster", autocompletion=_complete_profile,
-        help="本实验默认集群（写入实验自带 cluster 文件；不给则用模板默认 / 继承来源实验）",
+        help="目标集群 profile",
     ),
-    kind: Kind = typer.Option(Kind.experiments, "--kind", help="放到 experiments 还是 projects"),
+    kind: Kind = typer.Option(Kind.experiments, "--kind", help="experiments 或 projects"),
 ) -> None:
     if from_exp and method is not Method.grpo:
-        typer.secho("注：--from（fork）会继承来源实验的方法/配置，--method 被忽略。", fg=typer.colors.YELLOW)
+        typer.secho("fork 会继承来源实验配置，--method 已忽略。", fg=typer.colors.YELLOW)
     src = ""
     if from_exp:
         src = Path(_resolve_exp(from_exp)).name
@@ -220,7 +186,7 @@ def _validate_exp(exp_path: str) -> tuple[list[str], list[str]]:
     return errors, warns
 
 
-@app.command(help="提交作业到集群（经中心化服务执行；提交前自动校验 config）")
+@app.command(help="提交训练作业（提交前自动校验 config）")
 def submit(
     exp: str = typer.Argument(..., autocompletion=_complete_exp, help="实验名或路径"),
     profile: Optional[str] = _PROF_OPT,
@@ -232,27 +198,23 @@ def submit(
         errors, _ = _validate_exp(exp_path)
         if errors:
             typer.secho(
-                f"\n{exp_path}: config 校验未通过（{len(errors)} 个错误）。"
-                "修复后再 submit，或 --no-validate 强制提交。",
+                f"\n{exp_path}：config 有 {len(errors)} 处错误，请修复后再提交（或加 --no-validate）。",
                 fg=typer.colors.RED,
             )
             raise typer.Exit(1)
     # 打包 working-dir → 上传到中心化服务 → 服务端注入密钥/路径后代理提交（密钥/地址不外泄）。
     res = cli_login.submit_via_server(exp_path, profile, ROOT)
     gpus = res.get("requested_gpus")
-    typer.secho(
-        f"✓ 已提交：job={res.get('job_id')}  run_id={res.get('run_id')}"
-        + (f"  GPU={gpus}" if gpus is not None else "")
-        + ("  [dry-run]" if res.get("dry_run") else ""),
-        fg=typer.colors.GREEN,
-    )
-    typer.echo(f"  跟随日志：lab logs {res.get('job_id')}")
+    msg = f"✓ 已提交  作业 {res.get('job_id')}"
+    if gpus is not None:
+        msg += f"  ·  {gpus} GPU"
+    if res.get("dry_run"):
+        msg += "  ·  预演"
+    typer.secho(msg, fg=typer.colors.GREEN)
+    typer.echo(f"  查看日志：lab logs {res.get('job_id')}")
 
 
-@app.command(
-    help="清理某实验在集群上的产物目录（checkpoint/日志），让同名实验下次从头训练。"
-    "经服务端在集群侧删除（fan-out 所有节点，兼容共享盘/本地盘）；本实验有活跃作业时会被拒绝。"
-)
+@app.command(help="清理实验在集群上的 checkpoint 与日志（不可恢复）")
 def clean(
     exp: str = typer.Argument(..., autocompletion=_complete_exp, help="实验名或路径"),
     yes: bool = typer.Option(False, "-y", "--yes", help="跳过确认"),
@@ -261,19 +223,15 @@ def clean(
     exp_path = _resolve_exp(exp)
     if not yes:
         typer.confirm(
-            f"将删除集群上 {exp_path} 的产物目录（checkpoint/日志），不可恢复。确认清理？",
+            f"将删除 {exp_path} 在集群上的训练产物，不可恢复。继续？",
             abort=True,
         )
     res = cli_login.clean_via_server(exp_path)
-    typer.secho(
-        f"✓ 已提交清理：job={res.get('job_id')}  目标={res.get('target')}"
-        + ("  [dry-run]" if res.get("dry_run") else ""),
-        fg=typer.colors.GREEN,
-    )
-    typer.echo(f"  查看清理结果：lab logs {res.get('job_id')}")
+    typer.secho(f"✓ 已提交清理  作业 {res.get('job_id')}", fg=typer.colors.GREEN)
+    typer.echo(f"  查看进度：lab logs {res.get('job_id')}")
 
 
-@app.command(help="提交前静态校验实验 config（batch 三者相等等；本地秒级，省得跑到集群才报错）")
+@app.command(help="校验实验 config（提交前本地检查）")
 def validate(
     exp: str = typer.Argument(..., autocompletion=_complete_exp, help="实验名或路径"),
 ) -> None:
@@ -281,12 +239,12 @@ def validate(
     errors, warns = _validate_exp(exp_path)
     if errors:
         typer.secho(
-            f"\n{exp_path}: {len(errors)} 个错误，{len(warns)} 个告警 —— 修复后再 submit。",
+            f"\n{exp_path}：{len(errors)} 处错误" + (f"，{len(warns)} 处告警" if warns else ""),
             fg=typer.colors.RED,
         )
         raise typer.Exit(1)
     suffix = f"（{len(warns)} 个告警）" if warns else ""
-    typer.secho(f"✓ {exp_path}: 校验通过{suffix}", fg=typer.colors.GREEN)
+    typer.secho(f"✓ {exp_path}：通过{suffix}", fg=typer.colors.GREEN)
 
 
 def _flatten(obj, prefix: str = "") -> dict[str, str]:
@@ -303,7 +261,7 @@ def _flatten(obj, prefix: str = "") -> dict[str, str]:
     return out
 
 
-@app.command(help="对比两实验 config 差异（默认解析后的语义 diff；fork 调参时看改了哪些键）")
+@app.command(help="对比两实验 config 差异")
 def diff(
     exp_a: str = typer.Argument(..., autocompletion=_complete_exp, help="实验 A（基准）"),
     exp_b: str = typer.Argument(..., autocompletion=_complete_exp, help="实验 B（对比）"),
@@ -370,51 +328,46 @@ def diff(
     typer.echo(f"\n小结：改 {len(changed)}，A 独有 {len(only_a)}，B 独有 {len(only_b)}")
 
 
-@app.command(help="体检中心化服务：是否已登录 / 服务是否可达 / 当前配额")
+@app.command(help="检查登录与连接是否正常")
 def doctor() -> None:
     srv = cli_login.current_server()
-    if not srv:
-        typer.secho("未接入中心化服务：先 `lab login --server <https://lab.company.com>`。", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    typer.echo(f"中心化服务  {srv}")
     token = cli_login.get_access_token(srv)
     if not token:
-        typer.secho("  ✗ 未登录：先 `lab login`（集群命令会自动跳浏览器认证）", fg=typer.colors.RED)
+        typer.secho("✗ 请先运行 lab login", fg=typer.colors.RED)
         raise typer.Exit(1)
     try:
         who = cli_login.usage_via_server()
         q = who.get("quota") or {}
-        typer.secho("  ✓ 已登录且服务可达（/api/usage/mine）", fg=typer.colors.GREEN)
+        typer.secho("✓ 已登录，连接正常", fg=typer.colors.GREEN)
         cap = q.get("max_concurrent_gpus")
-        typer.secho(
-            f"  ✓ 配额：GPU≤{'不限' if cap is None else cap}，作业≤{q.get('max_concurrent_jobs') or '不限'}",
-            fg=typer.colors.GREEN,
+        typer.echo(
+            f"  配额：GPU {'不限' if cap is None else cap}"
+            f" · 作业 {q.get('max_concurrent_jobs') or '不限'}"
         )
-    except Exception as e:  # noqa: BLE001
-        typer.secho(f"  ✗ 服务不可达或登录失效：{type(e).__name__}", fg=typer.colors.RED)
+    except Exception:  # noqa: BLE001
+        typer.secho("✗ 无法连接 Lab，请检查网络或重新登录", fg=typer.colors.RED)
         raise typer.Exit(1) from None
-    typer.secho("\n✓ 体检通过，可以 lab submit 了。", fg=typer.colors.GREEN)
+    typer.secho("\n✓ 可以提交训练了", fg=typer.colors.GREEN)
 
 
 # ----------------------------- 训练后闭环（export / eval；提交到集群执行）-----------------------------
 def _submit_post(action: str, exp_path: str, profile: Optional[str], flags: list[str], dry_run: bool) -> int:
     """把 export/eval 作业经服务端代理提交到集群（入口 scripts/post_train.sh）。"""
-    cli_login.gate(action)  # export / eval：需登录
-    if dry_run:
-        typer.secho("（dry-run 由服务端 LAB_SUBMIT_DRY_RUN 控制）", fg=typer.colors.YELLOW)
+    cli_login.gate(action)
     res = cli_login.submit_post_via_server(action, exp_path, profile, flags, ROOT)
     gpus = res.get("requested_gpus")
-    typer.secho(
-        f"✓ 已提交 [{action}]：job={res.get('job_id')}  run_id={res.get('run_id')}"
-        + (f"  GPU={gpus}" if gpus is not None else "")
-        + ("  [dry-run]" if res.get("dry_run") else ""),
-        fg=typer.colors.GREEN,
-    )
-    typer.echo(f"  跟随日志：lab logs {res.get('job_id')}")
+    label = "导出" if action == "export" else "评测"
+    msg = f"✓ 已提交{label}  作业 {res.get('job_id')}"
+    if gpus is not None:
+        msg += f"  ·  {gpus} GPU"
+    if res.get("dry_run"):
+        msg += "  ·  预演"
+    typer.secho(msg, fg=typer.colors.GREEN)
+    typer.echo(f"  查看日志：lab logs {res.get('job_id')}")
     return 0
 
 
-@app.command(name="export", help="把训练 checkpoint 转成 HF 格式（按后端自适应 dcp/megatron），可选推 HF Hub；执行在集群")
+@app.command(name="export", help="将 checkpoint 转为 HuggingFace 格式（可推 Hub）")
 def export_ckpt(
     exp: str = typer.Argument(..., autocompletion=_complete_exp, help="实验名或路径"),
     step: Optional[int] = typer.Option(None, "--step", help="checkpoint 步数（默认最新 step_<N>）"),
@@ -438,8 +391,7 @@ def export_ckpt(
 
 @app.command(
     name="eval",
-    help="对 checkpoint 跑独立评测（run_eval.py，仅吃 HF 格式；未给 --model 时先自动导出）；执行在集群。"
-    "额外的 NeMo-RL 覆盖项写在 `--` 之后，如：lab eval <exp> -- generation.temperature=0.6",
+    help="对 checkpoint 跑评测（未指定 --model 时会先自动导出）",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
 def eval_ckpt(
@@ -473,7 +425,7 @@ def sync_base(
 ) -> None:
     path = nemo_rl or os.environ.get("NEMO_RL_DIR")
     if not path:
-        typer.secho("请设置 NEMO_RL_DIR 或使用 --nemo-rl 指向本地 NeMo-RL 源码目录", fg=typer.colors.RED)
+        typer.secho("请用 --nemo-rl 指定 NeMo-RL 源码目录，或设置 NEMO_RL_DIR。", fg=typer.colors.RED)
         raise typer.Exit(1)
     try:
         sync_base_configs(ROOT, path)
@@ -483,7 +435,7 @@ def sync_base(
 
 
 # ----------------------------- 提交历史 / 状态 / 日志（经服务端）-----------------------------
-@app.command(help="查看我的提交历史（服务端台账：每次 submit/export/eval 的 run_id / 状态 / GPU）")
+@app.command(help="查看提交历史")
 def runs(
     all_runs: bool = typer.Option(False, "--all", help="显示全部（默认最近 20 条）"),
     exp: Optional[str] = typer.Option(
@@ -496,7 +448,7 @@ def runs(
     if exp:
         jobs = [j for j in jobs if exp in (j.get("exp") or "")]
     if not jobs:
-        typer.echo("（服务端没有你的作业记录；lab submit 后会出现）")
+        typer.echo("（暂无记录）")
         raise typer.Exit(0)
     typer.echo(f"{'TIME':<20} {'STATUS':<10} {'GPU':>4}  {'EXP':<28} RUN_ID")
     for j in jobs:
@@ -516,13 +468,11 @@ def _format_user_label(user: dict) -> str:
     return "  ".join(parts)
 
 
-@app.command(help="我的身份 / 配额 / 用量 / 活跃作业（submit 前预检）")
+@app.command(help="账号、配额、用量与活跃作业")
 def status() -> None:
     cli_login.gate("status")
-    srv = cli_login.current_server()
     who = cli_login.whoami_via_server()
     user = who.get("user") or {}
-    typer.echo(f"服务：{srv}")
     typer.echo(_format_user_label(user))
     typer.echo("")
 
@@ -552,10 +502,10 @@ def status() -> None:
             f"（占用 {gpu.get('gpu_used', 0):g}）"
         )
         typer.echo(f"  活跃作业 : {cluster.get('active_count', 0)}")
-    typer.echo("\n详情/日志： lab logs <JOB ID>")
+    typer.echo("\n查看日志：lab logs [作业 ID]")
 
 
-@app.command(help="看作业日志：不给 job_id 默认跟随【最近一个】作业（经服务端转发）")
+@app.command(help="跟随作业日志（省略作业 ID 则跟最近一个）")
 def logs(
     job_id: Optional[str] = typer.Argument(None, help="作业 ID（见 lab job ls）；省略=最近一个"),
     tail: Optional[int] = typer.Option(
@@ -565,7 +515,7 @@ def logs(
     cli_login.gate("logs")
     jid = job_id or cli_login.latest_job_via_server()
     if not jid:
-        typer.secho("没有可跟随的作业（先 lab submit）。", fg=typer.colors.YELLOW)
+        typer.secho("还没有作业，请先 lab submit。", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
     cli_login.stream_logs_via_server(jid, tail=tail)
 
@@ -573,7 +523,7 @@ def logs(
 # ----------------------------- 作业管理（经服务端）-----------------------------
 job_app = typer.Typer(
     no_args_is_help=True,
-    help="作业管理（经中心化服务：列出 / 看日志 / 状态 / 停止 / 删除我的作业）",
+    help="作业管理",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(job_app, name="job")
@@ -589,7 +539,7 @@ def _server_jobs_table(jobs: list[dict]) -> None:
         typer.echo(f"{jid:<26} {str(j.get('status','-')):<10} {str(j.get('requested_gpus') or '-'):>4}  {j.get('exp','-')}")
 
 
-@job_app.command("ls", help="列出我的集群作业（精简表格）")
+@job_app.command("ls", help="获取作业列表")
 def job_ls(
     all_jobs: bool = typer.Option(False, "--all", help="显示全部（默认最近 15 条）"),
 ) -> None:
@@ -597,7 +547,7 @@ def job_ls(
     _server_jobs_table(cli_login.list_my_jobs(limit=200 if all_jobs else 15))
 
 
-@job_app.command("logs", help="查看作业日志（实时跟随）")
+@job_app.command("logs", help="查看作业日志")
 def job_logs(
     job_id: str = typer.Argument(..., help="作业 ID（见 lab job ls）"),
     tail: Optional[int] = typer.Option(
@@ -631,7 +581,7 @@ def job_samples(
     overview = cli_login.job_overview_via_server(job_id)
     vals = overview.get("validations") or []
     if not vals:
-        typer.secho("该作业暂无验证样本（可能尚未跑到验证步）。", fg=typer.colors.YELLOW)
+        typer.secho("该作业暂无验证样本。", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
     idx = vidx if vidx >= 0 else len(vals) + vidx
     if idx < 0 or idx >= len(vals):
@@ -662,8 +612,8 @@ def job_stop(
     job_id: str = typer.Argument(..., help="作业 ID"),
 ) -> None:
     cli_login.gate("job-stop")
-    res = cli_login.job_control_via_server("stop", job_id)
-    typer.secho(f"✓ stop: {res}", fg=typer.colors.GREEN)
+    cli_login.job_control_via_server("stop", job_id)
+    typer.secho("✓ 已停止作业", fg=typer.colors.GREEN)
 
 
 @job_app.command("delete", help="删除某个已结束的作业记录（运行中需先 stop）")
@@ -671,8 +621,8 @@ def job_delete(
     job_id: str = typer.Argument(..., help="作业 ID"),
 ) -> None:
     cli_login.gate("job-delete")
-    res = cli_login.job_control_via_server("delete", job_id)
-    typer.secho(f"✓ delete: {res}", fg=typer.colors.GREEN)
+    cli_login.job_control_via_server("delete", job_id)
+    typer.secho("✓ 已删除记录", fg=typer.colors.GREEN)
 
 
 @job_app.command("cancel-all", help="停止我所有运行中 / 排队中的作业")
@@ -686,7 +636,7 @@ def job_cancel_all(
     typer.secho(f"✓ 已停止 {res.get('stopped', 0)} 个作业", fg=typer.colors.GREEN)
 
 
-@job_app.command("clean", help="清理我已结束作业的集群记录（dashboard 清理，保留台账历史）")
+@job_app.command("clean", help="清理已结束作业的显示记录")
 def job_clean() -> None:
     cli_login.gate("job-clean")
     res = cli_login.batch_via_server("clean")
@@ -694,10 +644,10 @@ def job_clean() -> None:
 
 
 # ----------------------------- 中心化 Lab 服务：登录/身份/配额 -----------------------------
-app.command(help="登录中心化 Lab 服务（--server 指定地址；未登录的集群命令会自动跳浏览器认证）")(cli_login.login)
-app.command(help="登出：吊销 refresh 并清除本地凭据")(cli_login.logout)
-app.command(help="显示当前登录身份 / 角色 / 配额")(cli_login.whoami)
-app.command(help="查看配额与实时用量")(cli_login.quota)
+app.command(help="登录 Lab")(cli_login.login)
+app.command(help="登出")(cli_login.logout)
+app.command(help="当前账号与配额")(cli_login.whoami)
+app.command(help="配额详情（JSON）")(cli_login.quota)
 app.add_typer(cli_login.admin_app, name="admin")
 
 

@@ -19,7 +19,7 @@
 ```bash
 # 1) 装本机 CLI（只是提交客户端，无需 GPU）+ 接入中心化服务（登录一次）
 uv sync
-lab login --server https://lab.company.com      # 登录后集群命令经服务端代理；未登录会自动跳浏览器认证
+lab login                                       # 登录官方 Lab 服务（默认 https://nemolab.gcoreinc.com）
 
 # 2) 选实验、按需调参：打开 experiments/<exp>/config.yaml 顶部「调参速查」改几行
 lab ls                                          # 看现成实验
@@ -113,7 +113,7 @@ agent-grpo_qwen3.5-9b_toolbench_v1
 所有操作都通过 `lab` 入口（[Typer](https://typer.tiangolo.com) 实现，纯 Python，**macOS / Linux / Windows 完全兼容**）：
 
 ```bash
-uv run lab login --server https://lab.company.com   # 接入中心化服务（一次；之后命令会自动跳浏览器认证）
+uv run lab login                               # 接入官方 Lab 服务（默认 https://nemolab.gcoreinc.com）
 uv run lab ls                                # 列出实验 / 项目
 uv run lab new grpo_qwen3.5-4b_gsm8k_v1 --method grpo --cluster h100   # 从骨架新建实验（grpo|sft|agent）
 uv run lab diff grpo_qwen3.5-4b_gsm8k_v1 grpo_qwen3.5-9b_gsm8k_v1      # 对比两实验有效 config 差异（fork 调参常用）
@@ -130,7 +130,7 @@ uv run lab job stop <job_id>                 # 停止运行中的作业
 uv run lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底配置
 ```
 
-> 首次使用：`uv run lab login --server <地址>` 接入中心化服务，再 `uv run lab doctor` 确认已登录、服务可达，然后 `lab submit`。
+> 首次使用：`uv run lab login` 接入官方 Lab 服务，再 `uv run lab doctor` 确认已登录、服务可达，然后 `lab submit`。
 > 提交一律经服务端代理：Ray 地址 / 密钥 / 数据目录都在服务端，本机不直连 Ray、无需任何 `submit.env`。
 > 每次 `lab submit` 会自动：① 校验 config（batch 三者相等等，不过不放行，可 `--no-validate` 跳过）；
 > ② 由服务端记录 git commit / dirty / config 指纹与 `run_id`。
@@ -199,7 +199,7 @@ uv run lab submit <新实验名>
 ```bash
 # A. 一次性：装本机 CLI + 接入中心化服务
 uv sync
-uv run lab login --server https://lab.company.com
+uv run lab login
 
 # B. 每次：提交、看/停作业（全程经服务端，本机不直连 Ray）
 uv run lab submit grpo_qwen3.5-4b_gsm8k_v1
