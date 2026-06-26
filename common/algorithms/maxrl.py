@@ -76,9 +76,13 @@ class MaxRLAdvantageEstimator:
     用法：通过 install_maxrl_estimator() 让 NeMo-RL 在 grpo.adv_estimator.name == "maxrl" 时选用本类。
     """
 
-    def __init__(self, estimator_config: dict[str, Any], loss_config: dict[str, Any]):
+    def __init__(self, estimator_config: Any, loss_config: Any):
         # 组均值（通过率）归一化的除法保护项；可在 config 的 adv_estimator.epsilon 覆盖。
-        self.epsilon = float(estimator_config.get("epsilon", 1e-6))
+        if hasattr(estimator_config, "get"):
+            eps = estimator_config.get("epsilon", 1e-6)
+        else:
+            eps = getattr(estimator_config, "epsilon", 1e-6)
+        self.epsilon = float(eps)
 
     def compute_advantage(
         self,
@@ -106,16 +110,28 @@ def install_maxrl_estimator() -> None:
 
     original = grpo_mod._create_advantage_estimator
 
+    def _section(master_config, key):
+        # 兼容不同 NeMo-RL 版本：main 分支 MasterConfig 是 pydantic（顶层属性访问 master_config.grpo），
+        # v0.6.0 等老版本用下标（master_config["grpo"]）。两种都试。
+        if hasattr(master_config, key):
+            return getattr(master_config, key)
+        return master_config[key]
+
     def _create_with_maxrl(master_config):
-        grpo_cfg = master_config["grpo"]
-        adv_cfg = grpo_cfg.get("adv_estimator", {}) or {}
-        if adv_cfg.get("name") == "maxrl":
+        grpo_cfg = _section(master_config, "grpo")
+        # 嵌套 section 通常是 dict（.get 可用）；个别版本是对象，用 getattr 兜底。
+        if hasattr(grpo_cfg, "get"):
+            adv_cfg = grpo_cfg.get("adv_estimator", {}) or {}
+        else:
+            adv_cfg = getattr(grpo_cfg, "adv_estimator", {}) or {}
+        adv_name = adv_cfg.get("name") if hasattr(adv_cfg, "get") else getattr(adv_cfg, "name", None)
+        if adv_name == "maxrl":
             print(
                 "  ✓ Using MaxRL advantage estimator "
                 "(组均值/通过率归一化 (r-μ)/μ；逼近最大似然目标，arXiv:2602.02710)",
                 flush=True,
             )
-            return MaxRLAdvantageEstimator(adv_cfg, master_config["loss_fn"])
+            return MaxRLAdvantageEstimator(adv_cfg, _section(master_config, "loss_fn"))
         return original(master_config)
 
     grpo_mod._create_advantage_estimator = _create_with_maxrl
