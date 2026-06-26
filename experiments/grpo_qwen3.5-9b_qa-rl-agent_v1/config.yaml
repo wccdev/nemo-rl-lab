@@ -39,22 +39,22 @@ policy:
   #    1536（=baseline 单轮值）对多轮是错的：仅「prompt(~550)+搜一次(≤512)+回灌(~300)+作答(~512)」
   #    就 ≈1900>1536 → 在写 \boxed 前被截断 → 判 0。这正是初始 truncation_rate 0.6~0.9、准确率仅 15% 的根因。
   #    故抬到 3072，让「检索一次+作答」乃至两次检索都能完整放下，截断率才回得来。
-  #    H100(80GB) 显存宽裕，3072 毫无压力（注：单卡 H100 须 colocated 生成，见 cluster profile）。
+  #    H100(80GB) 显存宽裕，3072 毫无压力
   max_total_sequence_length: 3072
-  train_global_batch_size: 16 # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
-  generation_batch_size: 8
+  train_global_batch_size: 32 # = num_prompts_per_step * num_generations_per_prompt（4×4），与 baseline 严格一致
+  generation_batch_size: 16
   generation:
     max_new_tokens: 1280 # 每轮生成上限：一次检索查询很短，作答留足空间
 
 grpo:
   num_prompts_per_step: 4 # 与 baseline 一致
-  num_generations_per_prompt: 4 # 与 baseline 严格一致（组内基线，4 样本对 GRPO LOO 仍有效）
+  num_generations_per_prompt: 8 # 与 baseline 严格一致（组内基线，4 样本对 GRPO LOO 仍有效）
   max_rollout_turns: 3 # 多轮：最多 3 轮（典型 1 次检索 + 作答）
-  max_num_steps: 300 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
+  max_num_steps: 400 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
   val_period: 50
   val_at_start: true
   val_at_end: true
-  max_val_samples: 128
+  max_val_samples: 256
   val_batch_size: 64 # <= max_val_samples
 
 loss_fn:
