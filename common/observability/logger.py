@@ -1,0 +1,84 @@
+"""NeMoLabLogger：实现 NeMo-RL LoggerInterface 兼容接口，主动上报 console。"""
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from typing import Any, Mapping, Optional
+
+from common.observability.hardware_monitor import HardwareMonitor
+from common.observability.session import get_ingest
+from common.observability.util import flatten_dict, scalarize_metric
+
+
+class NeMoLabLogger:
+    """Drop-in backend，经 common.observability.patch 挂到 nemo_rl.utils.logger.Logger。"""
+
+    def __init__(self, cfg: dict | None = None, log_dir: str | None = None):
+        del log_dir
+        cfg = cfg or {}
+        ingest = get_ingest()
+        if ingest is None:
+            raise ValueError(
+                "NeMoLabLogger requires active observability session "
+                "(start_observability before NeMo-RL Logger init)"
+            )
+        self._ingest = ingest
+        monitor_interval = float(
+            cfg.get("monitor_interval")
+            or os.environ.get("NEMOLAB_MONITOR_INTERVAL", "10")
+        )
+        monitor_hardware = str(
+            cfg.get("monitor_hardware", os.environ.get("NEMOLAB_MONITOR_HARDWARE", "1"))
+        ).lower() not in ("0", "false", "no")
+        self._hw_monitor: HardwareMonitor | None = None
+        if monitor_hardware:
+            self._hw_monitor = HardwareMonitor(
+                self._ingest, collection_interval=monitor_interval
+            )
+            self._hw_monitor.start()
+
+    def log_metrics(
+        self,
+        metrics: dict[str, Any],
+        step: int,
+        prefix: Optional[str] = "",
+        step_metric: Optional[str] = None,
+        step_finished: bool = False,
+    ) -> None:
+        del step_metric, step_finished
+        flat = flatten_dict(metrics)
+        if prefix:
+            flat = {
+                f"{prefix}/{k}" if not k.startswith(f"{prefix}/") else k: v
+                for k, v in flat.items()
+            }
+        ts = datetime.now(timezone.utc).isoformat()
+        points = []
+        for key, value in flat.items():
+            scalar = scalarize_metric(value)
+            if scalar is None:
+                continue
+            points.append({"key": key, "step": int(step), "value": scalar, "ts": ts})
+        if points:
+            self._ingest.enqueue_metrics(points)
+
+    def log_hyperparams(self, params: Mapping[str, Any]) -> None:
+        self._ingest.enqueue_hparams(flatten_dict(params))
+
+    def log_plot(self, figure, step: int, name: str) -> None:
+        del figure, step, name
+
+    def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
+        scalar = scalarize_metric(histogram)
+        if scalar is not None:
+            self.log_metrics({name: scalar}, step)
+
+    def finish(self) -> None:
+        if self._hw_monitor:
+            self._hw_monitor.stop()
+
+    def __del__(self) -> None:
+        try:
+            self.finish()
+        except Exception:
+            pass

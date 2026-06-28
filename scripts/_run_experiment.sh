@@ -84,5 +84,10 @@ done
 # 置 1 让 Ray 合并 Job 与 Driver 的 runtime_env（冲突以 Driver 为准，值相同无副作用；直跑无害）。
 export RAY_OVERRIDE_JOB_RUNTIME_ENV=1
 
+# 训练入口经 nemolab_boot.py 包装：运行前给 NeMo-RL Logger 挂上 NeMoLabLogger 后端，
+# 把训练指标 + 每卡硬件主动上报中心化 console（落库供前端展示，不依赖反向爬 Ray 日志）。
+# 仅当 console 注入 NEMOLAB_TOKEN 时生效；本地直跑无该变量，boot 为透明 no-op，行为不变。
+# boot 脚本在上传的 working_dir(REPO_ROOT) 内，按路径调用即可，无需在 NeMo-RL venv 里装包。
+BOOT="${REPO_ROOT}/scripts/nemolab_boot.py"
 cd "${NEMO_RL_DIR}"
-exec uv run python "${ENTRY}" --config "${CONFIG}" "${OVERRIDES[@]}"
+exec uv run python "${BOOT}" "${ENTRY}" --config "${CONFIG}" "${OVERRIDES[@]}"
