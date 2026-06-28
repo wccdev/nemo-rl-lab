@@ -67,6 +67,12 @@ class IngestClient:
         with self._lock:
             self._hparams_pending = dict(params)
 
+    def enqueue_environment(self, payload: dict) -> None:
+        try:
+            self._post("environment", {"run_id": self.run_id, **payload})
+        except Exception:
+            pass
+
     def enqueue_log(self, chunk: str) -> None:
         if not chunk:
             return

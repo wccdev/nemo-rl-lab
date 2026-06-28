@@ -33,6 +33,12 @@ def start_observability() -> ObservabilitySession | None:
     flush_interval = float(os.environ.get("NEMOLAB_FLUSH_INTERVAL", "1.5"))
     ingest = IngestClient(endpoint, run_id, token, flush_interval=flush_interval)
     ingest.start()
+    try:
+        from common.observability.env_probe import collect_environment
+
+        ingest.enqueue_environment(collect_environment())
+    except Exception as e:
+        print(f"NeMoLab environment probe skipped: {e}")
     terminal = TerminalProxy(ingest)
     terminal.install()
     _session = ObservabilitySession(ingest, terminal)
