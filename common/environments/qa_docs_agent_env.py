@@ -204,11 +204,15 @@ def _assemble_blocks(blocks: list[str]) -> str:
     return sep.join(out)
 
 
+_LINENO_PREFIX_RE = re.compile(r"^L\d+:\s*")
+
+
 def _dedup_keep_order(lines: list[str], seen: set[str]) -> list[str]:
-    """跨块去重：丢掉已出现过的实质性行（长度≥6，避免误删短编号行）；空行保留以维持可读性由调用方处理。"""
+    """跨块去重：丢掉正文已出现过的实质性行（去重键剥掉「Lxx: 」行号前缀，故不同位置的相同内容也能去重）。
+    仅对长度≥6 的内容去重，避免误删短编号/标题行；空行/省略号原样保留。"""
     kept: list[str] = []
     for ln in lines:
-        key = ln.strip()
+        key = _LINENO_PREFIX_RE.sub("", ln.strip())
         if len(key) >= 6:
             if key in seen:
                 continue
