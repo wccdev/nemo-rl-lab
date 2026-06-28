@@ -1,17 +1,26 @@
-"""仿 SwanLab Monitor：经 Ray 在各节点 pynvml/psutil 直采。
+"""硬件监控：仅采集与当前 Ray 作业相关的节点资源。
 
-ray 仅在集群容器内可用，本地开发环境通常未安装；故全程懒加载 ray。
-集群里 ray 必然可用：init_ray() 在 NeMo-RL 构造 Logger 之前调用，监控正常采集。
-仅当 ray 模块不可导入（非集群环境，本就不跑训练）才放弃；ray 暂未 init 则在循环里等待。
+默认 scope=job：driver 节点 + 本 job alive actors 所在节点（单节点作业等同本机采集）。
+多节点作业自动 fan-out 到这些节点；不扫整个 Ray 集群无关机器。
+
+scope=local  — 仅本进程所在机器（纯 SwanLab 行为）
+scope=cluster — 全集群 alive 节点（调试用，NEMOLAB_MONITOR_CLUSTER=1 等价）
 """
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Literal
 
 from common.observability.hw_probe import collect_hw_snapshot
+from common.observability.job_nodes import current_ray_node_id, discover_job_node_ids
+from common.observability.sampling import swanlab_monitor_interval
 from common.observability.util import scalarize_metric
+
+MonitorScope = Literal["local", "job", "cluster"]
+NODE_DISCOVERY_TTL = 60.0
 
 
 class HardwareMonitor:
@@ -20,20 +29,27 @@ class HardwareMonitor:
         ingest,
         *,
         collection_interval: float = 10.0,
+        dynamic_interval: bool = True,
+        scope: MonitorScope = "job",
     ):
         self.ingest = ingest
-        self.collection_interval = collection_interval
+        self.base_interval = max(5.0, float(collection_interval))
+        self.dynamic_interval = dynamic_interval
+        self.scope: MonitorScope = scope
+        self._samples_collected = 0
         self._running = False
         self._thread: threading.Thread | None = None
+        self._node_cache: tuple[float, set[str]] | None = None
 
     def start(self) -> None:
-        # ray 仅集群容器内存在；本地开发/单测环境无 ray，此时才真正放弃硬件监控
-        # （那些环境本就不跑训练）。集群里 ray 一定可导入，监控线程必然启动。
-        try:
-            import ray  # noqa: F401
-        except ImportError:
-            print("NeMoLab hardware monitor skipped: ray not available (non-cluster env)")
-            return
+        if self.scope in ("job", "cluster"):
+            try:
+                import ray  # noqa: F401
+            except ImportError:
+                if self.scope == "cluster":
+                    print("NeMoLab hardware monitor skipped: ray not available")
+                    return
+                self.scope = "local"
         if self._running:
             return
         self._running = True
@@ -45,39 +61,78 @@ class HardwareMonitor:
     def stop(self) -> None:
         self._running = False
         if self._thread:
-            self._thread.join(timeout=self.collection_interval * 2)
+            self._thread.join(timeout=120)
+
+    def _sleep_interval(self) -> float:
+        return swanlab_monitor_interval(
+            self._samples_collected,
+            base_interval=self.base_interval,
+            dynamic=self.dynamic_interval,
+        )
 
     def _loop(self) -> None:
-        import ray
-
         while self._running:
             try:
-                # 不依赖 Logger 与 init_ray() 的构造先后：ray 未 ready 时本轮等待，下轮重试，
-                # 一旦集群 ray 起来就开始采集，避免“构造时序变化导致永久不采”。
-                if not ray.is_initialized():
-                    time.sleep(self.collection_interval)
-                    continue
-                points = self._collect_cluster_hw()
+                points = self._collect()
                 if points:
                     self.ingest.enqueue_hardware(points)
+                    self._samples_collected += 1
             except Exception as e:
                 print(f"NeMoLab hardware monitor error: {e}")
-            time.sleep(self.collection_interval)
+            time.sleep(self._sleep_interval())
 
-    def _collect_cluster_hw(self) -> list[dict]:
+    def _collect(self) -> list[dict]:
+        if self.scope == "local":
+            return self._collect_local_hw(node_id=current_ray_node_id())
+        if self.scope == "cluster":
+            return self._collect_cluster_hw()
+        return self._collect_job_hw()
+
+    def _job_node_ids(self) -> set[str]:
+        now = time.time()
+        if self._node_cache and now - self._node_cache[0] < NODE_DISCOVERY_TTL:
+            return self._node_cache[1]
+        ids = discover_job_node_ids()
+        self._node_cache = (now, ids)
+        return ids
+
+    def _collect_job_hw(self) -> list[dict]:
+        import ray
+
+        if not ray.is_initialized():
+            return self._collect_local_hw()
+        node_ids = self._job_node_ids()
+        if not node_ids:
+            return self._collect_local_hw()
+        if len(node_ids) == 1:
+            nid = next(iter(node_ids))
+            return self._collect_local_hw(node_id=nid)
+        current = current_ray_node_id()
+        points: list[dict] = []
+        if current and current in node_ids:
+            points.extend(self._collect_local_hw(node_id=current))
+        remote = sorted(nid for nid in node_ids if nid != current)
+        if remote:
+            points.extend(self._collect_nodes_hw(remote))
+        return points
+
+    def _collect_local_hw(self, *, node_id: str | None = None) -> list[dict]:
+        snap = collect_hw_snapshot()
+        ts = datetime.now(timezone.utc).isoformat()
+        worker_id = snap.get("hostname") or socket.gethostname()
+        return _snap_to_points(snap, ts=ts, node_id=node_id, worker_id=worker_id)
+
+    def _collect_nodes_hw(self, node_ids: list[str]) -> list[dict]:
         import ray
         from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+        if not node_ids:
+            return []
         remote_collect = ray.remote(num_cpus=0)(collect_hw_snapshot)
         ts = datetime.now(timezone.utc).isoformat()
         points: list[dict] = []
-        nodes = [n for n in ray.nodes() if n.get("Alive")]
         futures = []
-        node_ids = []
-        for node in nodes:
-            node_id = node.get("NodeID")
-            if not node_id:
-                continue
+        for node_id in node_ids:
             futures.append(
                 remote_collect.options(
                     scheduling_strategy=NodeAffinitySchedulingStrategy(
@@ -85,29 +140,56 @@ class HardwareMonitor:
                     )
                 ).remote()
             )
-            node_ids.append(node_id)
-        if not futures:
-            return points
         snapshots = ray.get(futures)
         for node_id, snap in zip(node_ids, snapshots, strict=False):
             worker_id = snap.get("hostname") or node_id
-            for key, value in (snap.get("metrics") or {}).items():
-                gpu_idx = None
-                if key.startswith("gpu."):
-                    parts = key.split(".")
-                    if len(parts) > 1 and parts[1].isdigit():
-                        gpu_idx = int(parts[1])
-                scalar = scalarize_metric(value)
-                if scalar is None:
-                    continue
-                points.append(
-                    {
-                        "key": key,
-                        "value": scalar,
-                        "node_id": node_id,
-                        "worker_id": worker_id,
-                        "gpu_idx": gpu_idx,
-                        "ts": ts,
-                    }
-                )
+            points.extend(
+                _snap_to_points(snap, ts=ts, node_id=node_id, worker_id=worker_id)
+            )
         return points
+
+    def _collect_cluster_hw(self) -> list[dict]:
+        import ray
+
+        if not ray.is_initialized():
+            return []
+        node_ids = [
+            str(n.get("NodeID"))
+            for n in ray.nodes()
+            if n.get("Alive") and n.get("NodeID")
+        ]
+        return self._collect_nodes_hw(node_ids)
+
+
+def _snap_to_points(
+    snap: dict,
+    *,
+    ts: str,
+    node_id: str | None,
+    worker_id: str,
+) -> list[dict]:
+    points: list[dict] = []
+    for key, value in (snap.get("metrics") or {}).items():
+        scalar = scalarize_metric(value)
+        if scalar is None:
+            continue
+        points.append(
+            {
+                "key": key,
+                "value": scalar,
+                "node_id": node_id,
+                "worker_id": worker_id,
+                "gpu_idx": _gpu_index(key),
+                "ts": ts,
+            }
+        )
+    return points
+
+
+def _gpu_index(key: str) -> int | None:
+    if not key.startswith("gpu."):
+        return None
+    parts = key.split(".")
+    if len(parts) > 1 and parts[1].isdigit():
+        return int(parts[1])
+    return None

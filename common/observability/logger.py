@@ -27,13 +27,38 @@ class NeMoLabLogger:
             cfg.get("monitor_interval")
             or os.environ.get("NEMOLAB_MONITOR_INTERVAL", "10")
         )
+        monitor_dynamic = str(
+            cfg.get(
+                "monitor_dynamic_interval",
+                os.environ.get("NEMOLAB_MONITOR_DYNAMIC", "1"),
+            )
+        ).lower() not in ("0", "false", "no")
         monitor_hardware = str(
             cfg.get("monitor_hardware", os.environ.get("NEMOLAB_MONITOR_HARDWARE", "1"))
         ).lower() not in ("0", "false", "no")
+        scope_raw = str(
+            cfg.get("monitor_scope")
+            or os.environ.get("NEMOLAB_MONITOR_SCOPE")
+            or (
+                "cluster"
+                if str(
+                    cfg.get(
+                        "monitor_cluster",
+                        os.environ.get("NEMOLAB_MONITOR_CLUSTER", "0"),
+                    )
+                ).lower()
+                in ("1", "true", "yes")
+                else "job"
+            )
+        ).lower()
+        monitor_scope = scope_raw if scope_raw in ("local", "job", "cluster") else "job"
         self._hw_monitor: HardwareMonitor | None = None
         if monitor_hardware:
             self._hw_monitor = HardwareMonitor(
-                self._ingest, collection_interval=monitor_interval
+                self._ingest,
+                collection_interval=monitor_interval,
+                dynamic_interval=monitor_dynamic,
+                scope=monitor_scope,  # type: ignore[arg-type]
             )
             self._hw_monitor.start()
 
