@@ -1,4 +1,4 @@
-# grpo_qwen3.5-9b_qa-rl-agent_v2（MaxRL 改版）
+# maxrl_qwen3.5-9b_qa-rl-agent_v2（MaxRL 改版）
 
 用 **MaxRL**（GRPO 的最大似然改版）在自有**技术培训考题题库**上强化训练 **Qwen 3.5 9B**。**多轮**：模型回答前可多次调用 `<search>`，由环境在**集群容器内**对本地资料目录做 **BM25** 检索 **markdown** 文件，拿到资料再作答。
 
@@ -85,7 +85,7 @@ grep -rinI --include="*.md" -C2 "随便挑一道题里的关键词" /data/docs |
 ```bash
 # 1) 确保题库在集群、资料 markdown 已放到容器内 DOCS_DIR；服务端已注入 QA_RL_DATA_DIR / JUDGE_* / DOCS_*
 # 2) 提交
-lab submit grpo_qwen3.5-9b_qa-rl-agent_v2
+lab submit maxrl_qwen3.5-9b_qa-rl-agent_v2
 ```
 
 > 想和 GRPO 版同图对比：v1 与本实验共用 SwanLab project `qa-rl-compare`（曲线名 `grpo-*` vs `maxrl-multiturn-kb`），各自提交即可叠在一张图上看 GRPO vs MaxRL。

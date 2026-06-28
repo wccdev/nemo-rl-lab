@@ -1,11 +1,13 @@
-# 题库「多轮 + 本地文档检索」Agent GRPO 实验：qwen3.5-9b 在自有技术培训考题上做强化训练。
+# 题库「多轮 + 本地文档检索」Agent 实验 —— 【MaxRL 版 / v2】：qwen3.5-9b 在自有技术培训考题上做强化训练。
 # 继承官方单轮基底 grpo_math_1B + qwen3.5-9b 片段，只写差异。
 # 奖励是自定义环境 QADocsAgentEnv（common/environments/qa_docs_agent_env.py），由本目录 run.py 实例化
 # （task_name=qa_docs，读取 env.qa_docs.cfg）。最终判分复用 common/rewards 的 qa 奖励（与单轮实验同源）。
 #
-# ★ 对比实验【实验二 / treatment】：多轮、可调用 <search> 在集群容器内 grep 本地资料（/data/docs 下 markdown）再作答。
-#   对照基线【实验一 / baseline】= grpo_qwen3.5-9b_qa-rl_v1（单轮、无工具）。
-#   两者共用同一数据集 / 模型 / LoRA / batch / 裁判奖励，唯一差异是「能否多轮检索本地资料」。
+# ★ 本实验 = grpo_qwen3.5-9b_qa-rl-agent_v1（GRPO 多轮检索）的【MaxRL 改版】：
+#   唯一差异是 RL 优化目标 —— 把 GRPO 的优势归一化从「除以组内标准差 σ」换成 MaxRL 的「除以组内平均奖励 μ」
+#   （论文《Maximum Likelihood Reinforcement Learning》arXiv:2602.02710；实现 common/algorithms/maxrl.py）。
+#   由下方 grpo.adv_estimator.name=="maxrl" 触发，run.py 在训练前 install_maxrl_estimator() 打补丁。
+#   数据 / 模型 / LoRA / batch / seq / 裁判 / 多轮检索全部与 v1 一致，便于直接对比 GRPO vs MaxRL 两条曲线。
 #   ⚠️ 资料目录由 DOCS_DIR 控制（默认 /data/docs）；目录不存在时 <search> 返回占位提示，流程可跑通但拿不到资料。
 defaults:
   - ../../configs/base/grpo_math_1B.yaml
@@ -41,18 +43,24 @@ policy:
   #    故抬到 3072，让「检索一次+作答」乃至两次检索都能完整放下，截断率才回得来。
   #    H100(80GB) 显存宽裕，3072 毫无压力
   max_total_sequence_length: 3072
-  train_global_batch_size: 64 # = num_prompts_per_step * num_generations_per_prompt（4×16）。★与 MaxRL v2 对齐：同 N 才能干净对比
+  train_global_batch_size: 64 # = num_prompts_per_step * num_generations_per_prompt（4×16）。★随 num_generations_per_prompt 同步改
   generation_batch_size: 16
   generation:
     max_new_tokens: 1480 # 每轮生成上限：一次检索查询很短，作答留足空间
 
 grpo:
+  # ★ MaxRL 开关：优势归一化用「组内平均奖励 μ」替代 GRPO 的「标准差 σ」。
+  #   Â=(r-μ)/μ（μ=0 整组置 0）。其余 KL/clip/token-level loss 与 GRPO 完全一致。
+  #   删掉这两行即回退成普通 GRPO（= v1），可用来跑对照。
+  adv_estimator:
+    name: "maxrl"
   num_prompts_per_step: 4 # 与 baseline 一致
-  # ★ 与 MaxRL v2 对齐到同一采样数 N=16：对比必须同 N，否则混入「8 vs 16 rollout」第二变量。
-  #   注：GRPO 加大 N 基本只降方差、不改目标（pass@1）；MaxRL 加大 N 会逼近 MLE。这正是本对比要凸显的差异。
-  num_generations_per_prompt: 16 # 与 MaxRL v2 一致（GRPO 组内基线）
+  # ★★ MaxRL 的「逼近 MLE」旋钮：截断阶 T = 本采样数 N（论文 Thm.2）。N 越大越接近精确最大似然，
+  #    算力/显存线性增长。N=8（=GRPO）时 MaxRL 几乎等同 GRPO（这就是之前没看到提升的原因）；
+  #    论文增益出现在 N=16~128。这里先翻倍到 16；H100 还有余量可继续上 24/32（记得同步改 train_global_batch_size = 4×N）。
+  num_generations_per_prompt: 16 # = MaxRL 截断阶 T；越大越逼近 MLE，越贵
   max_rollout_turns: 3 # 多轮：最多 3 轮（典型 1 次检索 + 作答）
-  max_num_steps: 400 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
+  max_num_steps: 800 # 与 baseline 对齐；~100-200 步即收敛，val_at_end 兜底
   val_period: 50
   val_at_start: true
   val_at_end: true
@@ -100,5 +108,5 @@ logger:
   monitor_gpus: true
   num_val_samples_to_print: 16 # 每次验证把 16 条完整多轮对话(含检索)打印到作业日志；Web 面板分页查看
   swanlab:
-    project: "qa-rl-compare" # 与实验一同 project，便于同图对比两条曲线
-    name: "treatment-multiturn-kb"
+    project: "qa-rl-compare" # 与 GRPO 版同 project，便于同图对比 GRPO vs MaxRL 两条曲线
+    name: "maxrl-multiturn-kb"

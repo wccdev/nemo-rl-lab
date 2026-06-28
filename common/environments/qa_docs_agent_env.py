@@ -56,6 +56,9 @@ if _REPO_ROOT not in sys.path:
 #   DOCS_MAX_TERMS       [grep] OR 回退时最多用几个关键词（防止碎词把所有行都召回），默认 12。
 #   DOCS_CHUNK_LINES     [bm25] 检索单元（chunk）大小：超长段落按多少行切窗，默认 12。
 #   BM25_K1 / BM25_B     [bm25] BM25 超参（词频饱和 / 文档长度归一化），默认 1.5 / 0.75。
+#   DOCS_CLEAN           回灌前是否做 markdown/OCR 降噪（去表格符/标题符/图片链接/分隔线、超长行截断、
+#                        去重/去空行、加章节标题）。默认 1 开；设 0 回到原始逐行回灌。
+#   DOCS_MAX_LINE_CHARS  [clean] 单行最长字符数（截断 OCR/表格超长乱码行），默认 200；0=不限。
 # ⚠️ 检索发生在【集群训练进程】（Ray actor）所在容器里，所以 DOCS_DIR 必须是【容器内】真实存在的路径。
 DOCS_RETRIEVER = os.environ.get("DOCS_RETRIEVER", "bm25").lower()
 DOCS_DIR = os.environ.get("DOCS_DIR", "/data/docs")
@@ -70,6 +73,8 @@ DOCS_MAX_TERMS = int(os.environ.get("DOCS_MAX_TERMS", "12"))
 DOCS_CHUNK_LINES = int(os.environ.get("DOCS_CHUNK_LINES", "12"))
 BM25_K1 = float(os.environ.get("BM25_K1", "1.5"))
 BM25_B = float(os.environ.get("BM25_B", "0.75"))
+DOCS_CLEAN = os.environ.get("DOCS_CLEAN", "1") not in ("0", "false", "False", "")
+DOCS_MAX_LINE_CHARS = int(os.environ.get("DOCS_MAX_LINE_CHARS", "200"))
 
 # 关键词分词用：英文/数字/缩写/型号（如 CMP、PVD、Qwen3.5）直接抽；中文按 2-gram 滑窗（无需 jieba 也能召回）。
 _ASCII_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+#/-]+")
@@ -125,6 +130,91 @@ def _iter_terms(text: str) -> Iterator[str]:
                 if bg[0] in _ZH_STOP or bg[1] in _ZH_STOP:
                     continue
                 yield bg.lower()
+
+
+# ============================ 回灌降噪 / 预算感知拼装（省 token、去噪声）============================
+# 把 markdown/OCR 原始行清洗成「干净正文」再回灌：去掉对模型无信息但占 token 的符号噪声，
+# 并对超长乱码行做截断。清洗只影响【回灌文本与 BM25 词频统计】，不影响行号（空行用 "" 占位保号）。
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")            # ![alt](url) → 整体删
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")           # [text](url) → 保留 text
+_MD_RULE_RE = re.compile(r"^\s*([-=*_])\1{2,}\s*$")          # --- / === / *** 分隔线
+_MD_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*\S)\s*$")  # # 标题
+_HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")              # 裸 HTML 标签
+_WS_RE = re.compile(r"[ \t\u3000]+")                          # 折叠空白（含全角空格）
+
+
+def _heading_text(line: str) -> Optional[str]:
+    """是 markdown 标题行就返回标题文字，否则 None。"""
+    m = _MD_HEADING_RE.match(line)
+    return m.group(2).strip() if m else None
+
+
+def _clean_md_line(line: str) -> str:
+    """markdown/OCR 行降噪。返回清洗后的正文；纯噪声（分隔线/空壳）返回 ""（调用方按空行处理）。
+
+    DOCS_CLEAN=0 时只做最基本的右侧去空白，保持原样。
+    """
+    if not DOCS_CLEAN:
+        return line.rstrip()
+    s = line.strip()
+    if not s or _MD_RULE_RE.match(s):
+        return ""
+    s = _MD_IMAGE_RE.sub("", s)
+    s = _MD_LINK_RE.sub(r"\1", s)
+    s = _HTML_TAG_RE.sub("", s)
+    # 表格行 | a | b | c | → a  b  c（去掉竖线与对齐分隔行）
+    if s.startswith("|") or " | " in s:
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if all(set(c) <= set("-: ") for c in cells):  # |---|:--:| 这种对齐行整行丢
+            return ""
+        s = "  ".join(c for c in cells if c)
+    # 去行首 markdown 记号：# 标题号 / > 引用 / 列表符 / 序号
+    s = re.sub(r"^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)", "", s)
+    s = _WS_RE.sub(" ", s).strip()
+    if DOCS_MAX_LINE_CHARS and len(s) > DOCS_MAX_LINE_CHARS:
+        s = s[:DOCS_MAX_LINE_CHARS].rstrip() + "…"
+    return s
+
+
+def _assemble_blocks(blocks: list[str]) -> str:
+    """把若干片段块拼进 DOCS_MAX_CHARS 预算：尽量多塞几块，最后一块按【行边界】截断，绝不从行中间切。
+
+    比旧的 "\\n---\\n".join(blocks)[:N] 更好：① 不会把一块从中间切碎；② 预算在 TopK 间分配，
+    避免第一块过长把后面的块整体挤掉。
+    """
+    if not blocks:
+        return ""
+    sep = "\n---\n"
+    out: list[str] = []
+    used = 0
+    for b in blocks:
+        add_len = len(b) + (len(sep) if out else 0)
+        if used + add_len <= DOCS_MAX_CHARS:
+            out.append(b)
+            used += add_len
+            continue
+        # 预算不够整块：在行边界放下能放的部分（剩余空间够放至少一行才放）
+        remaining = DOCS_MAX_CHARS - used - (len(sep) if out else 0)
+        if remaining > 48:
+            head = b[:remaining]
+            cut = head.rfind("\n")
+            if cut > 0:
+                out.append(head[:cut] + "\n  ⋯（截断）")
+        break
+    return sep.join(out)
+
+
+def _dedup_keep_order(lines: list[str], seen: set[str]) -> list[str]:
+    """跨块去重：丢掉已出现过的实质性行（长度≥6，避免误删短编号行）；空行保留以维持可读性由调用方处理。"""
+    kept: list[str] = []
+    for ln in lines:
+        key = ln.strip()
+        if len(key) >= 6:
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(ln)
+    return kept
 
 
 def _run_grep(terms: list[str]) -> tuple[int, str, str]:
@@ -242,6 +332,7 @@ def _format_grep_output(raw: str, terms: list[str]) -> str:
         return "未检索到相关资料（换个关键词再试）"
 
     scored: list[tuple[int, int, str]] = []  # (命中 term 数, 文件首次出现序号, 排版后文本)
+    seen: set[str] = set()
     for idx, rel in enumerate(order):
         rows = files[rel]
         content = "\n".join(t for _, t in rows).lower()
@@ -249,15 +340,23 @@ def _format_grep_output(raw: str, terms: list[str]) -> str:
         body: list[str] = []
         prev: Optional[int] = None
         for lno, text in rows:
+            cleaned = _clean_md_line(text)
+            if not cleaned:  # 清洗后为纯噪声/空 → 跳过（不占 token）
+                continue
             if prev is not None and lno is not None and lno - prev > 1:
                 body.append("  ⋯")  # 同文件内不连续的命中区域之间插省略号
-            body.append(f"L{lno}: {text.strip()}" if lno is not None else text.strip())
+            body.append(f"L{lno}: {cleaned}" if lno is not None else cleaned)
             prev = lno
+        body = _dedup_keep_order(body, seen)
+        if not any(b.strip() and b.strip() != "⋯" for b in body):
+            continue
         scored.append((score, idx, f"【{rel}】\n" + "\n".join(body)))
 
+    if not scored:
+        return "未检索到相关资料（换个关键词再试）"
     scored.sort(key=lambda x: (-x[0], x[1]))  # 命中多的文件优先；同分稳定（保持首次出现顺序）
     out_blocks = [b for _, _, b in scored[:DOCS_TOP_K]]
-    return "\n---\n".join(out_blocks)[:DOCS_MAX_CHARS]
+    return _assemble_blocks(out_blocks)
 
 
 # ============================ BM25 检索（纯 Python，零依赖）============================
@@ -265,12 +364,12 @@ def _format_grep_output(raw: str, terms: list[str]) -> str:
 # BM25 给每个 chunk 算相关度分、取 Top-K，召回与排序都更稳，且仍是本地、零外部服务、结果可解释（带文件名+行号）。
 # 索引在 actor 进程内**懒构建一次并缓存**（训练期资料不变）；分词复用上面零依赖的 _iter_terms（含中文 2-gram）。
 class _Bm25Index:
-    """一个资料目录的 BM25 倒排索引。chunk = (相对路径, 起始行号, 该 chunk 的原始行列表)。"""
+    """一个资料目录的 BM25 倒排索引。chunk = (相对路径, 起始行号, 章节标题, 该 chunk 清洗后的行列表)。"""
 
     __slots__ = ("chunks", "postings", "idf", "doc_len", "avgdl", "n")
 
     def __init__(self) -> None:
-        self.chunks: list[tuple[str, int, list[str]]] = []
+        self.chunks: list[tuple[str, int, str, list[str]]] = []
         self.postings: dict[str, list[tuple[int, int]]] = {}  # term -> [(chunk_id, tf), ...]
         self.idf: dict[str, float] = {}
         self.doc_len: list[int] = []
@@ -291,8 +390,12 @@ def _iter_doc_files() -> Iterator[str]:
                 yield os.path.join(root, fn)
 
 
-def _split_chunks(path: str) -> list[tuple[str, int, list[str]]]:
-    """把一个文件切成检索单元：按空行分段；段落超过 DOCS_CHUNK_LINES 行再按窗口切。保留起始行号。"""
+def _split_chunks(path: str) -> list[tuple[str, int, str, list[str]]]:
+    """把一个文件切成检索单元：按空行分段；段落超过 DOCS_CHUNK_LINES 行再按窗口切。
+
+    每个 chunk 附带它所属的最近 markdown 章节标题（给模型定位用），并在切窗时存【清洗后】的行
+    （清洗后的纯噪声行用 "" 占位以保持行号正确，输出时再过滤）。
+    """
     try:
         raw = open(path, encoding="utf-8", errors="ignore").read()
     except OSError:
@@ -301,28 +404,33 @@ def _split_chunks(path: str) -> list[tuple[str, int, list[str]]]:
     base = DOCS_DIR.rstrip("/") + "/"
     rel = path[len(base):] if path.startswith(base) else path
 
-    out: list[tuple[str, int, list[str]]] = []
+    out: list[tuple[str, int, str, list[str]]] = []
 
-    def _emit(start_lno: int, buf: list[str]) -> None:
-        if not any(s.strip() for s in buf):
+    def _emit(start_lno: int, buf: list[str], heading: str) -> None:
+        cleaned = [_clean_md_line(s) for s in buf]
+        if not any(s for s in cleaned):
             return
-        for off in range(0, len(buf), DOCS_CHUNK_LINES):
-            window = buf[off:off + DOCS_CHUNK_LINES]
-            if any(s.strip() for s in window):
-                out.append((rel, start_lno + off, window))
+        for off in range(0, len(cleaned), DOCS_CHUNK_LINES):
+            window = cleaned[off:off + DOCS_CHUNK_LINES]
+            if any(s for s in window):
+                out.append((rel, start_lno + off, heading, window))
 
     para: list[str] = []
     para_start = 1
+    current_heading = ""
     for i, ln in enumerate(lines, start=1):
+        h = _heading_text(ln)
+        if h is not None:
+            current_heading = h
         if ln.strip() == "":
-            _emit(para_start, para)
+            _emit(para_start, para, current_heading)
             para = []
             para_start = i + 1
         else:
             if not para:
                 para_start = i
             para.append(ln)
-    _emit(para_start, para)
+    _emit(para_start, para, current_heading)
     return out
 
 
@@ -337,7 +445,7 @@ def _build_bm25_index(docs_dir: str) -> Optional[_Bm25Index]:
 
     df: dict[str, int] = {}
     idx.doc_len = [0] * idx.n
-    for cid, (_rel, _start, lines) in enumerate(idx.chunks):
+    for cid, (_rel, _start, _heading, lines) in enumerate(idx.chunks):
         tf: dict[str, int] = {}
         for term in _iter_terms(" ".join(lines)):
             tf[term] = tf.get(term, 0) + 1
@@ -376,13 +484,18 @@ def _bm25_search(query: str) -> str:
 
     top = sorted(scores.items(), key=lambda kv: -kv[1])[:DOCS_TOP_K]
     blocks: list[str] = []
+    seen: set[str] = set()
     for cid, _score in top:
-        rel, start, lines = idx.chunks[cid]
-        body = "\n".join(
-            f"L{start + j}: {ln.strip()}" for j, ln in enumerate(lines) if ln.strip()
-        )
-        blocks.append(f"【{rel}】\n{body}")
-    return "\n---\n".join(blocks)[:DOCS_MAX_CHARS]
+        rel, start, heading, lines = idx.chunks[cid]
+        rows = [f"L{start + j}: {ln}" for j, ln in enumerate(lines) if ln.strip()]
+        rows = _dedup_keep_order(rows, seen)
+        if not rows:
+            continue
+        title = f"【{rel} ▸ {heading}】" if heading else f"【{rel}】"
+        blocks.append(title + "\n" + "\n".join(rows))
+    if not blocks:
+        return "未检索到相关资料（换个关键词再试）"
+    return _assemble_blocks(blocks)
 
 
 # ============================ 检索分派入口 ============================
