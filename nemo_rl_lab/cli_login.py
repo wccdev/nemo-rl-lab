@@ -374,7 +374,7 @@ def stream_logs_via_server(job_id: str, server: Optional[str] = None,
     """经服务端 SSE 接口跟随作业日志（客户端不直连 Ray）。
 
     只把 log 事件原文还原后打到 stdout，不暴露 event:/id:/data:/keepalive 等协议噪音。
-    tail 给定时只回放最后 N 行历史日志再跟随（None=全量）。
+    tail 给定时只回放最后 N 行历史日志再跟随（默认 2000；0 或 None=全量）。
 
     健壮性：服务端为多副本 Redis Streams 推送，长连接可能被反代/实例切换回收。
     本函数在连接非正常结束（未收到 end 事件）时按指数退避自动重连，并携带

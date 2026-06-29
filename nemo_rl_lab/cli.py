@@ -509,7 +509,7 @@ def status() -> None:
 def logs(
     job_id: Optional[str] = typer.Argument(None, help="作业 ID（见 lab job ls）；省略=最近一个"),
     tail: Optional[int] = typer.Option(
-        None, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（省略=从头全量）"
+        2000, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（默认 2000；-n 0 看全量）"
     ),
 ) -> None:
     cli_login.gate("logs")
@@ -551,7 +551,7 @@ def job_ls(
 def job_logs(
     job_id: str = typer.Argument(..., help="作业 ID（见 lab job ls）"),
     tail: Optional[int] = typer.Option(
-        None, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（省略=从头全量）"
+        2000, "-n", "--tail", help="只回放最后 N 行历史日志再跟随（默认 2000；-n 0 看全量）"
     ),
 ) -> None:
     cli_login.gate("job-logs")
