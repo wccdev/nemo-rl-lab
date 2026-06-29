@@ -104,9 +104,8 @@ class HardwareMonitor:
         node_ids = self._job_node_ids()
         if not node_ids:
             return self._collect_local_hw()
-        if len(node_ids) == 1:
-            nid = next(iter(node_ids))
-            return self._collect_local_hw(node_id=nid)
+        # 按「本机 vs 远端」分流：唯一节点也可能是远端 worker（driver 节点已不再
+        # 无条件计入），不能再用 len==1 当作本机捷径，否则会把本机 GPU 误贴成远端。
         current = current_ray_node_id()
         points: list[dict] = []
         if current and current in node_ids:

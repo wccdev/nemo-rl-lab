@@ -37,15 +37,19 @@ def discover_job_node_ids(
     list_actors: Callable | None = None,
     job_id: str | None = None,
 ) -> set[str]:
-    """返回本作业相关的 Ray node_id 集合（含 driver 所在节点）。"""
-    nodes: set[str] = set()
+    """返回本作业【实际运行 actor】的 Ray node_id 集合。
+
+    只统计承载本 job alive actor 的节点（= 真正跑训练/生成的 GPU worker）。
+    纯 driver/head 节点（不跑本 job 的 actor，其 GPU 与本次训练无关）不计入，
+    否则监控面板会把那台无关机器的 GPU 也画成一条线（单机单卡作业却出现两条线的根因）。
+    仅当查不到任何 actor 节点时（作业刚启动、或 State API 暂不可用）才回退到
+    driver 所在节点兜底，保证面板不至于全空。
+    """
     cur = current_ray_node_id()
-    if cur:
-        nodes.add(cur)
 
     jid = job_id or runtime_ray_job_id()
     if not jid:
-        return nodes
+        return {cur} if cur else set()
 
     if list_actors is None:
         try:
@@ -53,7 +57,7 @@ def discover_job_node_ids(
 
             list_actors = _list_actors
         except Exception:
-            return nodes
+            return {cur} if cur else set()
 
     try:
         actors = list_actors(
@@ -63,8 +67,9 @@ def discover_job_node_ids(
             timeout=5,
         )
     except Exception:
-        return nodes
+        return {cur} if cur else set()
 
+    nodes: set[str] = set()
     for actor in actors or []:
         state = getattr(actor, "state", None) or ""
         if str(state).upper() in ("DEAD", "RESTARTING"):
@@ -72,4 +77,8 @@ def discover_job_node_ids(
         node_id = getattr(actor, "node_id", None)
         if node_id:
             nodes.add(str(node_id))
+
+    # 查到了 actor 节点就严格只采这些节点；一个都没查到才回退 driver 兜底。
+    if not nodes and cur:
+        nodes.add(cur)
     return nodes
