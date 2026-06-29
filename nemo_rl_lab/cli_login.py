@@ -159,6 +159,9 @@ def _refresh(server: str, creds: dict) -> Optional[dict]:
                 continue
             return None
         creds["access_token"] = resp["access_token"]
+        # 服务端轮转 refresh 时回传新 token，必须持久化，否则下次续期会用已吊销的旧 token 失败。
+        if resp.get("refresh_token"):
+            creds["refresh_token"] = resp["refresh_token"]
         creds["expires_at"] = time.time() + resp.get("expires_in", 3600) - 60
         _save_creds(server, creds)
         return creds
