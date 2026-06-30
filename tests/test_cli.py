@@ -17,7 +17,7 @@ def test_resolve_exp_known():
 
 
 def test_resolve_exp_unknown_raises():
-    with pytest.raises(typer.BadParameter):
+    with pytest.raises(typer.Exit):
         cli._resolve_exp("不存在的实验_xyz")
 
 

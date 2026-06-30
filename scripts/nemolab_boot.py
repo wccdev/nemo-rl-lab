@@ -36,6 +36,13 @@ def main() -> int:
     sys.argv = [entry, *sys.argv[2:]]
     try:
         runpy.run_path(entry, run_name="__main__")
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        return 1
     finally:
         try:
             from common.observability.session import stop_observability

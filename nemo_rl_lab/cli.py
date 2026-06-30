@@ -13,7 +13,7 @@ from typing import Optional
 
 import typer
 
-from nemo_rl_lab import cli_login
+from nemo_rl_lab import cli_login, cli_ui
 from nemo_rl_lab.new_experiment import NewExperimentError, create_experiment
 from nemo_rl_lab.sync_base import SyncBaseError, sync_base_configs
 
@@ -49,7 +49,7 @@ def _resolve_exp(name: str) -> str:
     for c in cands:
         if (ROOT / c).is_dir():
             return c
-    raise typer.BadParameter(f"找不到实验：{name}")
+    cli_ui.fail(f"找不到实验「{name}」", hint="运行 lab ls 查看可用实验")
 
 
 def _list_exps() -> list[str]:
@@ -146,8 +146,7 @@ def new(
             method=method.value,
         )
     except NewExperimentError as e:
-        typer.secho(str(e), fg=typer.colors.RED)
-        raise typer.Exit(1) from None
+        cli_ui.fail(str(e))
 
 
 @app.command(
@@ -160,13 +159,13 @@ def prepare(
 ) -> None:
     script = DATA_PREP.get(dataset)
     if not script:
-        raise typer.BadParameter(f"未知数据集: {dataset}（可选: {', '.join(DATA_PREP)}）")
+        cli_ui.fail(f"未知数据集「{dataset}」", hint=f"可选：{', '.join(DATA_PREP)}")
     # 用当前解释器（项目 uv 环境，含 datasets）跑数据脚本。
     raise typer.Exit(_run([sys.executable, str(script), *ctx.args]))
 
 
 def _validate_exp(exp_path: str) -> tuple[list[str], list[str]]:
-    """解析 + 校验某实验 config，打印问题，返回 (errors, warns)。解析失败按 1 个 error 计。"""
+    """解析 + 校验某实验 config，返回 (errors, warns)。解析失败按 1 个 error 计。"""
     from nemo_rl_lab.config_resolve import resolve, validate_config
 
     cfg_file = ROOT / exp_path / "config.yaml"
@@ -179,10 +178,6 @@ def _validate_exp(exp_path: str) -> tuple[list[str], list[str]]:
     issues = validate_config(cfg, repo_root=ROOT)
     errors = [m for lvl, m in issues if lvl == "error"]
     warns = [m for lvl, m in issues if lvl == "warn"]
-    for m in errors:
-        typer.secho(f"  ✗ {m}", fg=typer.colors.RED)
-    for m in warns:
-        typer.secho(f"  ! {m}", fg=typer.colors.YELLOW)
     return errors, warns
 
 
@@ -197,9 +192,10 @@ def submit(
     if not no_validate:
         errors, _ = _validate_exp(exp_path)
         if errors:
-            typer.secho(
-                f"\n{exp_path}：config 有 {len(errors)} 处错误，请修复后再提交（或加 --no-validate）。",
-                fg=typer.colors.RED,
+            cli_ui.emit_error(
+                f"config 校验未通过（{len(errors)} 处）",
+                items=errors,
+                hint="修复后重试，或加 --no-validate 跳过",
             )
             raise typer.Exit(1)
     # 打包 working-dir → 上传到中心化服务 → 服务端注入密钥/路径后代理提交（密钥/地址不外泄）。
@@ -238,11 +234,13 @@ def validate(
     exp_path = _resolve_exp(exp)
     errors, warns = _validate_exp(exp_path)
     if errors:
-        typer.secho(
-            f"\n{exp_path}：{len(errors)} 处错误" + (f"，{len(warns)} 处告警" if warns else ""),
-            fg=typer.colors.RED,
+        cli_ui.emit_error(
+            f"{exp_path}：{len(errors)} 处错误" + (f"，{len(warns)} 处告警" if warns else ""),
+            items=errors,
         )
         raise typer.Exit(1)
+    if warns:
+        cli_ui.emit_warning(f"{exp_path}：{len(warns)} 处告警", body="\n".join(f"• {w}" for w in warns))
     suffix = f"（{len(warns)} 个告警）" if warns else ""
     typer.secho(f"✓ {exp_path}：通过{suffix}", fg=typer.colors.GREEN)
 
@@ -273,7 +271,7 @@ def diff(
     fa, fb = ROOT / pa / "config.yaml", ROOT / pb / "config.yaml"
     for f in (fa, fb):
         if not f.is_file():
-            raise typer.BadParameter(f"缺少 config.yaml: {f.relative_to(ROOT)}")
+            cli_ui.fail(f"缺少 config.yaml：{f.relative_to(ROOT)}")
 
     if raw:
         import difflib
@@ -300,7 +298,7 @@ def diff(
     try:
         ca, cb = _flatten(resolve(fa)), _flatten(resolve(fb))
     except Exception as e:  # noqa: BLE001
-        raise typer.BadParameter(f"解析 config 失败：{e}") from None
+        cli_ui.fail(f"解析 config 失败：{e}")
 
     keys = sorted(set(ca) | set(cb))
     changed = [(k, ca[k], cb[k]) for k in keys if k in ca and k in cb and ca[k] != cb[k]]
@@ -430,8 +428,7 @@ def sync_base(
     try:
         sync_base_configs(ROOT, path)
     except SyncBaseError as e:
-        typer.secho(str(e), fg=typer.colors.RED)
-        raise typer.Exit(1) from None
+        cli_ui.fail(str(e))
 
 
 # ----------------------------- 提交历史 / 状态 / 日志（经服务端）-----------------------------
@@ -515,7 +512,7 @@ def logs(
     cli_login.gate("logs")
     jid = job_id or cli_login.latest_job_via_server()
     if not jid:
-        typer.secho("还没有作业，请先 lab submit。", fg=typer.colors.YELLOW)
+        cli_ui.emit_warning("还没有作业", hint="运行 lab submit 提交训练")
         raise typer.Exit(1)
     cli_login.stream_logs_via_server(jid, tail=tail)
 
@@ -566,8 +563,7 @@ def job_status(
     match = [j for j in cli_login.list_my_jobs(limit=200)
              if job_id in (j.get("ray_submission_id") or "", j.get("lab_run_id") or "")]
     if not match:
-        typer.secho(f"未找到作业 {job_id}", fg=typer.colors.RED)
-        raise typer.Exit(1)
+        cli_ui.fail(f"未找到作业 {job_id}")
     _server_jobs_table(match)
 
 
