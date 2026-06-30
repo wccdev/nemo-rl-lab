@@ -150,15 +150,49 @@ uv run lab sync-base --nemo-rl /opt/NeMo-RL  # 升级版本时同步官方基底
 
 ### 终端补全（Tab）
 
-子命令、实验名、数据集、profile 都能补全（bash / zsh / fish / powershell）。安装一次即可：
+子命令、实验名、数据集、profile 都支持 Tab 补全。**推荐**显式指定 shell（不依赖自动检测，CI / IDE 终端也能用）：
 
 ```bash
-uv run lab --install-completion      # 安装到当前 shell，重开终端生效
-uv run lab --show-completion         # 只打印脚本，自行决定放哪
+# 已激活 venv 或 PATH 里有 lab 时
+lab completion install zsh          # macOS 默认 shell
+lab completion install bash
+lab completion install fish
+lab completion install powershell   # Windows PowerShell 5.x
+lab completion install pwsh         # PowerShell Core
+
+# 只打印脚本、手动粘贴到配置里
+lab completion show zsh
 ```
 
-之后 `lab sub<Tab>` → `submit`，`lab submit <Tab>` 列出实验名，`lab submit --profile <Tab>` 列出 profile。
-（补全基于 `lab` 命令名；建议 `uv sync` 后用激活的 venv，或把 `.venv/bin` 加进 PATH。）
+仓库根用 **`./lab` shim**（未把 `.venv/bin` 加入 PATH）时，安装 bash 包装：
+
+```bash
+./lab completion install bash --wrapper
+# 或：lab completion show bash --wrapper >> ~/.bashrc
+```
+
+之后在**仓库根目录** `./lab sub<Tab>`、`./lab submit <Tab>` 即可补全。
+
+Typer 自带的（需当前终端能自动识别 shell，非 TTY 时常失败）：
+
+```bash
+lab --install-completion
+lab --show-completion
+```
+
+| 场景 | 建议 |
+|------|------|
+| macOS / Linux，venv 里 `lab` | `lab completion install zsh`（或 bash/fish） |
+| 仓库根 `./lab` | `lab completion install bash --wrapper` |
+| Windows PowerShell | `lab completion install powershell` |
+| Windows cmd.exe | 不支持；请用 PowerShell、Git Bash 或 WSL |
+| 自动检测失败 `Shell not supported` | 改用 `lab completion install <shell>` |
+
+说明：
+
+- 补全注册在命令名 **`lab`** 或 **`./lab`（wrapper）** 上；`./lab` 的 wrapper 补全仅在仓库根生效。
+- 实验名列表来自安装包旁的 `experiments/` 目录；editable 安装（`uv sync`）下与仓库同步。
+- 安装后需**重开终端**或 `source ~/.zshrc` / `source ~/.bashrc`。
 
 ## 新建一个实验（细节）
 

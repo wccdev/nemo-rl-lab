@@ -13,7 +13,7 @@ from typing import Optional
 
 import typer
 
-from nemo_rl_lab import cli_login, cli_ui
+from nemo_rl_lab import cli_login, cli_ui, shell_completion
 from nemo_rl_lab.new_experiment import NewExperimentError, create_experiment
 from nemo_rl_lab.sync_base import SyncBaseError, sync_base_configs
 
@@ -645,6 +645,51 @@ app.command(help="登出")(cli_login.logout)
 app.command(help="当前账号与配额")(cli_login.whoami)
 app.command(help="配额详情（JSON）")(cli_login.quota)
 app.add_typer(cli_login.admin_app, name="admin")
+
+
+# ----------------------------- shell 补全（显式指定 shell）-----------------------------
+completion_app = typer.Typer(
+    no_args_is_help=True,
+    help="Shell Tab 补全（install / show；可显式指定 bash/zsh/fish/powershell）",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+
+@completion_app.command("show", help="打印补全脚本（可复制到 shell 配置）")
+def completion_show(
+    shell: shell_completion.ShellChoice = typer.Argument(..., help="bash | zsh | fish | powershell | pwsh"),
+    wrapper: bool = typer.Option(
+        False, "--wrapper",
+        help="为仓库根 ./lab shim 生成 bash complete -F 包装（仅 bash）",
+    ),
+) -> None:
+    try:
+        script = shell_completion.show_script(shell, wrapper=wrapper, repo_root=ROOT)
+    except typer.BadParameter as e:
+        cli_ui.fail(str(e))
+    typer.echo(script)
+
+
+@completion_app.command("install", help="安装补全到当前用户 shell 配置")
+def completion_install(
+    shell: shell_completion.ShellChoice = typer.Argument(..., help="bash | zsh | fish | powershell | pwsh"),
+    wrapper: bool = typer.Option(
+        False, "--wrapper",
+        help="安装 ./lab shim 的 bash 补全（仓库根目录执行 ./lab <Tab>）",
+    ),
+) -> None:
+    try:
+        path = shell_completion.install_script(shell, wrapper=wrapper, repo_root=ROOT)
+    except typer.BadParameter as e:
+        cli_ui.fail(str(e))
+    label = f"{shell.value}（./lab shim）" if wrapper else shell.value
+    typer.secho(f"✓ 已安装 {label} 补全 → {path}", fg=typer.colors.GREEN)
+    typer.echo("  请重开终端或 source 对应配置文件后生效")
+    if wrapper:
+        typer.echo(f"  在仓库根目录：./lab sub<Tab>、./lab submit <Tab>")
+
+
+app.add_typer(completion_app, name="completion")
 
 
 if __name__ == "__main__":
